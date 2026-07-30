@@ -1,5 +1,6 @@
 """Tests for the scientist-facing command line."""
 
+import argparse
 import contextlib
 import io
 import os
@@ -7,62 +8,127 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from lab_control.cli import _run_with_homebrew_exodriver, main
+from lab_control.cli import _finite_float, _run_with_homebrew_exodriver, main
+from lab_control.config import Settings
 from lab_control.hardware import DeviceError
 
 
 class CommandLineTests(unittest.TestCase):
-    def run_command(self, arguments: list[str]) -> tuple[int, str]:
+    def run_command(
+        self, arguments: list[str], settings: Settings | None = None
+    ) -> tuple[int, str, str]:
         output = io.StringIO()
-        with contextlib.redirect_stdout(output):
+        errors = io.StringIO()
+        with (
+            patch("lab_control.cli.load_settings", return_value=settings or Settings()),
+            contextlib.redirect_stdout(output),
+            contextlib.redirect_stderr(errors),
+        ):
             status = main(arguments)
-        return status, output.getvalue()
+        return status, output.getvalue(), errors.getvalue()
 
     @patch("lab_control.cli.hardware.list_serial_ports")
     def test_lists_serial_ports(self, list_serial_ports) -> None:
         list_serial_ports.return_value = [("/dev/cu.usbserial-1", "USB serial adapter")]
 
-        status, output = self.run_command(["ports"])
+        status, output, errors = self.run_command(["ports"])
 
-        self.assertEqual(status, 0)
+        self.assertEqual((status, errors), (0, ""))
         self.assertEqual(output, "/dev/cu.usbserial-1: USB serial adapter\n")
 
     @patch("lab_control.cli.hardware.set_labjack_digital")
-    def test_sets_labjack_digital_output(self, set_digital) -> None:
+    def test_routes_configured_labjack_serial(self, set_digital) -> None:
         set_digital.return_value = True
+        settings = Settings(labjack_serial=320123456)
 
-        status, output = self.run_command(
-            ["labjack", "set-digital", "--channel", "4", "--state", "high"]
+        status, output, errors = self.run_command(
+            ["labjack", "set-digital", "--channel", "4", "--state", "high"],
+            settings,
         )
 
-        self.assertEqual(status, 0)
-        self.assertEqual(output, "FIO4: high\n")
-        set_digital.assert_called_once_with(4, True, None)
+        self.assertEqual((status, errors), (0, ""))
+        self.assertEqual(output, "FIO4 reported state: high\n")
+        set_digital.assert_called_once_with(4, True, 320123456)
 
     @patch("lab_control.cli.hardware.set_alicat_flow", new_callable=AsyncMock)
-    def test_stops_alicat_flow(self, set_flow) -> None:
-        set_flow.return_value = {"setpoint": 0.0}
+    def test_routes_alicat_stop_connection(self, set_flow) -> None:
+        set_flow.return_value = 0.0
+        settings = Settings(alicat_port="COM3", alicat_unit="B", alicat_baud_rate=9600)
 
-        status, output = self.run_command(["alicat", "stop", "--port", "COM3"])
+        status, output, errors = self.run_command(["alicat", "stop"], settings)
 
-        self.assertEqual(status, 0)
-        self.assertIn("Alicat flow setpoint is zero.", output)
-        set_flow.assert_awaited_once_with("COM3", 0.0, "A")
+        self.assertEqual((status, errors), (0, ""))
+        self.assertEqual(output, "Alicat mass-flow setpoint changed to zero.\n")
+        set_flow.assert_awaited_once_with("COM3", 0.0, "B", 9600, 0.15)
+
+    @patch("lab_control.cli.hardware.set_alicat_flow", new_callable=AsyncMock)
+    def test_validates_and_reports_alicat_flow(self, set_flow) -> None:
+        set_flow.return_value = 1.23
+        settings = Settings(
+            alicat_port="COM3",
+            alicat_maximum_flow=2.0,
+            alicat_units={"mass_flow": "SCCM"},
+        )
+
+        status, output, errors = self.run_command(["alicat", "set-flow", "1.234"], settings)
+
+        self.assertEqual((status, errors), (0, ""))
+        self.assertEqual(output, "Alicat mass-flow setpoint changed to 1.23 SCCM.\n")
+        set_flow.assert_awaited_once_with("COM3", 1.23, "A", 19200, 0.15)
+
+    @patch("lab_control.cli.hardware.set_alicat_flow", new_callable=AsyncMock)
+    def test_rejects_flow_outside_configured_limits(self, set_flow) -> None:
+        settings = Settings(
+            alicat_port="COM3",
+            alicat_maximum_flow=2.0,
+            alicat_units={"mass_flow": "SCCM"},
+        )
+
+        status, output, errors = self.run_command(["alicat", "set-flow", "3.0"], settings)
+
+        self.assertEqual((status, output), (2, ""))
+        self.assertIn("Flow must be from 0.0 through 2.0 SCCM.", errors)
+        set_flow.assert_not_awaited()
+
+    @patch("lab_control.cli.hardware.set_alicat_flow", new_callable=AsyncMock)
+    def test_checks_rounded_flow_against_the_safe_maximum(self, set_flow) -> None:
+        settings = Settings(
+            alicat_port="COM3",
+            alicat_maximum_flow=1.235,
+            alicat_units={"mass_flow": "SCCM"},
+        )
+
+        status, output, errors = self.run_command(["alicat", "set-flow", "1.235"], settings)
+
+        self.assertEqual((status, output), (2, ""))
+        self.assertIn("through 1.235 SCCM", errors)
+        set_flow.assert_not_awaited()
 
     @patch("lab_control.cli.hardware.labjack_status")
-    def test_shows_device_errors_without_a_traceback(self, labjack_status) -> None:
-        labjack_status.side_effect = DeviceError("LabJack U3 command failed: device not found")
+    def test_writes_hardware_errors_to_stderr(self, labjack_status) -> None:
+        labjack_status.side_effect = DeviceError("device not found")
 
-        status, output = self.run_command(["labjack", "status"])
+        status, output, errors = self.run_command(["labjack", "status"])
 
-        self.assertEqual(status, 1)
-        self.assertEqual(output, "Error: LabJack U3 command failed: device not found\n")
+        self.assertEqual((status, output), (1, ""))
+        self.assertEqual(errors, "Hardware error: device not found\n")
+
+    def test_rejects_nonfinite_flow(self) -> None:
+        for value in ("nan", "inf", "-inf", "1e309"):
+            with (
+                self.subTest(value=value),
+                self.assertRaises(argparse.ArgumentTypeError),
+            ):
+                _finite_float(value)
 
     @patch("lab_control.cli.subprocess.run")
     @patch("lab_control.cli.Path.exists", return_value=True)
     @patch("lab_control.cli.sys.platform", "darwin")
-    @patch("lab_control.cli.sys.argv", ["lab-control", "labjack", "status"])
-    def test_uses_apple_silicon_homebrew_driver_path(self, _exists, run) -> None:
+    @patch(
+        "lab_control.cli.sys.argv",
+        ["lab-control", "--config", "other.toml", "labjack", "status"],
+    )
+    def test_uses_homebrew_driver_with_config_argument(self, _exists, run) -> None:
         run.return_value.returncode = 0
 
         with patch.dict(os.environ, {"DYLD_LIBRARY_PATH": ""}):

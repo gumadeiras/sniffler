@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "labjack-alicat-control"
-version = "0.1.0"
+version = "0.2.0"
 description = "Simple control for a LabJack U3 and Alicat mass flow controller"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -28,4 +28,3 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["B", "E", "F", "I", "RUF", "SIM", "UP"]
-

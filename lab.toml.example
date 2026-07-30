@@ -1,0 +1,23 @@
+# Copy this file to lab.toml. Replace each example value with the value for
+# your device. Do not guess the flow units or safe limits.
+
+[labjack]
+serial = 320000000
+
+[alicat]
+port = "/dev/cu.usbserial-EXAMPLE"
+unit = "A"
+baud_rate = 19200
+timeout_seconds = 0.15
+minimum_flow = 0.0
+allow_negative_flow = false
+
+# Add a verified number before you use set-flow:
+# maximum_flow = <verified safe maximum>
+
+# Add each verified unit:
+# [alicat.units]
+# pressure = "<verified pressure unit>"
+# temperature = "<verified temperature unit>"
+# volumetric_flow = "<verified volumetric-flow unit>"
+# mass_flow = "<verified mass-flow unit>"
