@@ -1,0 +1,8 @@
+.DS_Store
+.python-version.local
+.venv/
+__pycache__/
+*.py[cod]
+.coverage
+.ruff_cache/
+dist/
