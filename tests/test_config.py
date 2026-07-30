@@ -56,7 +56,7 @@ class ConfigurationTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "one letter"):
             self.load('[alicat]\nunit = ""\n')
 
-    def test_example_blocks_flow_until_safe_values_are_added(self) -> None:
+    def test_example_uses_the_device_limit_by_default(self) -> None:
         example = Path(__file__).parents[1] / "lab.toml.example"
         settings = load_settings(example)
 

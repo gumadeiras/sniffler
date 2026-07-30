@@ -12,8 +12,8 @@ timeout_seconds = 0.15
 minimum_flow = 0.0
 allow_negative_flow = false
 
-# Add a verified number before you use set-flow:
-# maximum_flow = <verified safe maximum>
+# Optional experiment limit. The tool always enforces the device full scale.
+# maximum_flow = <stricter experiment maximum>
 
 # Add each verified unit:
 # [alicat.units]

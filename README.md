@@ -15,7 +15,9 @@ range before you send an output command.
 
 The tool applies these rules:
 
-- A flow value must be finite and inside the configured safe range.
+- A flow value must be finite and inside the full-scale range reported by the
+  Alicat.
+- A configured flow limit can make the allowed range smaller.
 - Negative flow is disabled unless `allow_negative_flow` is `true`.
 - A flow command is refused unless the Alicat control point is `mass flow`.
 - The tool never changes the Alicat control point.
@@ -87,8 +89,8 @@ timeout_seconds = 0.15
 minimum_flow = 0.0
 allow_negative_flow = false
 
-# Add a verified number before you use set-flow:
-# maximum_flow = <verified safe maximum>
+# Optional experiment limit. The tool always enforces the device full scale:
+# maximum_flow = <stricter experiment maximum>
 
 # Add each verified unit:
 # [alicat.units]
@@ -99,8 +101,8 @@ allow_negative_flow = false
 ```
 
 `lab.toml` is local and is not committed to Git. Unknown or invalid settings
-cause a clear configuration error. `minimum_flow` and `maximum_flow` use the
-configured `mass_flow` unit.
+cause a clear configuration error. `minimum_flow` and `maximum_flow` are
+optional experiment limits in the current Alicat mass-flow unit.
 
 ## 4. Check the connections
 
@@ -164,9 +166,11 @@ Both commands first read the current control point. They stop without sending a
 setpoint if the control point is not `mass flow`. Change the control point on
 the Alicat itself, confirm the gas system, and then retry.
 
-`set-flow` requires `maximum_flow` and `units.mass_flow` in `lab.toml`. `stop`
-does not require these two values, but it still requires a valid Alicat
-connection and a mass-flow control point.
+Before each nonzero command, `set-flow` reads the mass-flow full scale and unit
+from the Alicat. It refuses values outside the device range. `maximum_flow` is
+optional and can set a stricter experiment limit. `stop` does not depend on the
+full-scale query, but it still requires a valid Alicat connection and a
+mass-flow control point.
 
 ## Temporary command overrides
 

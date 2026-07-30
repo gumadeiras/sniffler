@@ -104,21 +104,18 @@ def _alicat_units(settings: Settings, control_point: object) -> dict[str, str]:
     return units
 
 
-def _validate_requested_flow(flow_rate: float, settings: Settings) -> tuple[str, float]:
+def _validate_requested_flow(flow_rate: float, settings: Settings) -> float:
     maximum = settings.alicat_maximum_flow
-    mass_flow_unit = settings.alicat_units.get("mass_flow")
-    if maximum is None or not mass_flow_unit:
-        raise ConfigError(
-            "Set alicat.maximum_flow and alicat.units.mass_flow in lab.toml before changing flow."
-        )
     if flow_rate < 0 and not settings.alicat_allow_negative_flow:
         raise ConfigError("Negative flow is disabled in lab.toml.")
     applied_flow = hardware.normalize_alicat_flow(flow_rate)
-    if not settings.alicat_minimum_flow <= applied_flow <= maximum:
-        raise ConfigError(
-            f"Flow must be from {settings.alicat_minimum_flow} through {maximum} {mass_flow_unit}."
-        )
-    return mass_flow_unit, applied_flow
+    if applied_flow < settings.alicat_minimum_flow:
+        unit = settings.alicat_units.get("mass_flow", "current device units")
+        raise ConfigError(f"Flow must be at least {settings.alicat_minimum_flow} {unit}.")
+    if maximum is not None and applied_flow > maximum:
+        unit = settings.alicat_units.get("mass_flow", "current device units")
+        raise ConfigError(f"Flow must be at most the configured limit of {maximum} {unit}.")
+    return applied_flow
 
 
 def _ports(_arguments: argparse.Namespace, _settings: Settings) -> None:
@@ -157,9 +154,9 @@ def _alicat_status(arguments: argparse.Namespace, settings: Settings) -> None:
 
 
 def _alicat_set_flow(arguments: argparse.Namespace, settings: Settings) -> None:
-    flow_unit, applied_flow = _validate_requested_flow(arguments.flow_rate, settings)
+    applied_flow = _validate_requested_flow(arguments.flow_rate, settings)
     port, unit, baud_rate, timeout_seconds = _alicat_connection(arguments, settings)
-    applied_flow = asyncio.run(
+    applied_flow, device_unit = asyncio.run(
         hardware.set_alicat_flow(
             port,
             applied_flow,
@@ -168,6 +165,7 @@ def _alicat_set_flow(arguments: argparse.Namespace, settings: Settings) -> None:
             timeout_seconds,
         )
     )
+    flow_unit = device_unit or settings.alicat_units.get("mass_flow", "device units")
     print(f"Alicat mass-flow setpoint changed to {applied_flow:.2f} {flow_unit}.")
 
 

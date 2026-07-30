@@ -18,6 +18,29 @@ def normalize_alicat_flow(flow_rate: float) -> float:
     return float(f"{flow_rate:.2f}")
 
 
+async def _read_alicat_mass_flow_full_scale(controller: Any) -> tuple[float, str]:
+    """Read the Alicat mass-flow full scale and its unit."""
+    try:
+        response = await controller._write_and_read(f"{controller.unit}FPF 5")
+    except Exception as error:
+        raise DeviceError(
+            f"Cannot read the Alicat mass-flow full scale; no setpoint was sent: {error}"
+        ) from error
+
+    try:
+        response_unit, maximum_text, _unit_value, flow_unit = response.split(maxsplit=3)
+        maximum = float(maximum_text)
+    except (AttributeError, TypeError, ValueError) as error:
+        raise DeviceError(
+            f"Invalid Alicat mass-flow full-scale response {response!r}; no setpoint was sent."
+        ) from error
+    if response_unit != controller.unit or not math.isfinite(maximum) or maximum <= 0:
+        raise DeviceError(
+            f"Invalid Alicat mass-flow full-scale response {response!r}; no setpoint was sent."
+        )
+    return maximum, flow_unit
+
+
 def list_serial_ports() -> list[tuple[str, str]]:
     """Return available serial ports and their descriptions."""
     from serial.tools import list_ports
@@ -162,7 +185,7 @@ async def set_alicat_flow(
     unit: str = "A",
     baud_rate: int = 19200,
     timeout_seconds: float = 0.15,
-) -> float:
+) -> tuple[float, str | None]:
     """Set and verify the Alicat mass-flow setpoint."""
     applied_flow = normalize_alicat_flow(flow_rate)
 
@@ -181,6 +204,15 @@ async def set_alicat_flow(
                 "Set the controller to mass flow first."
             )
 
+        flow_unit = None
+        if applied_flow != 0:
+            maximum, flow_unit = await _read_alicat_mass_flow_full_scale(controller)
+            if abs(applied_flow) > maximum:
+                raise DeviceError(
+                    f"The requested flow exceeds the Alicat full scale of "
+                    f"{maximum:g} {flow_unit}; no setpoint was sent."
+                )
+
         try:
             await controller.set_flow_rate(applied_flow)
         except Exception as error:
@@ -188,4 +220,4 @@ async def set_alicat_flow(
                 "Cannot confirm the Alicat setpoint write; "
                 f"the setpoint might have changed: {error}"
             ) from error
-        return applied_flow
+        return applied_flow, flow_unit

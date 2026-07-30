@@ -52,7 +52,7 @@ class CommandLineTests(unittest.TestCase):
 
     @patch("lab_control.cli.hardware.set_alicat_flow", new_callable=AsyncMock)
     def test_routes_alicat_stop_connection(self, set_flow) -> None:
-        set_flow.return_value = 0.0
+        set_flow.return_value = (0.0, None)
         settings = Settings(alicat_port="COM3", alicat_unit="B", alicat_baud_rate=9600)
 
         status, output, errors = self.run_command(["alicat", "stop"], settings)
@@ -62,13 +62,9 @@ class CommandLineTests(unittest.TestCase):
         set_flow.assert_awaited_once_with("COM3", 0.0, "B", 9600, 0.15)
 
     @patch("lab_control.cli.hardware.set_alicat_flow", new_callable=AsyncMock)
-    def test_validates_and_reports_alicat_flow(self, set_flow) -> None:
-        set_flow.return_value = 1.23
-        settings = Settings(
-            alicat_port="COM3",
-            alicat_maximum_flow=2.0,
-            alicat_units={"mass_flow": "SCCM"},
-        )
+    def test_uses_the_device_unit_without_a_configured_maximum(self, set_flow) -> None:
+        set_flow.return_value = (1.23, "SCCM")
+        settings = Settings(alicat_port="COM3")
 
         status, output, errors = self.run_command(["alicat", "set-flow", "1.234"], settings)
 
@@ -87,7 +83,7 @@ class CommandLineTests(unittest.TestCase):
         status, output, errors = self.run_command(["alicat", "set-flow", "3.0"], settings)
 
         self.assertEqual((status, output), (2, ""))
-        self.assertIn("Flow must be from 0.0 through 2.0 SCCM.", errors)
+        self.assertIn("configured limit of 2.0 SCCM", errors)
         set_flow.assert_not_awaited()
 
     @patch("lab_control.cli.hardware.set_alicat_flow", new_callable=AsyncMock)
@@ -101,7 +97,7 @@ class CommandLineTests(unittest.TestCase):
         status, output, errors = self.run_command(["alicat", "set-flow", "1.235"], settings)
 
         self.assertEqual((status, output), (2, ""))
-        self.assertIn("through 1.235 SCCM", errors)
+        self.assertIn("configured limit of 1.235 SCCM", errors)
         set_flow.assert_not_awaited()
 
     @patch("lab_control.cli.hardware.labjack_status")

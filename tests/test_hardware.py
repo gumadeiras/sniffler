@@ -84,6 +84,14 @@ class MassFlowClient(MockAlicatClient):
         super().__init__(address)
         self.control_point = "mass flow"
 
+    def _handle_write(self, data: bytes) -> None:
+        message = data.decode().strip()
+        if message[1:] == "FPF 5":
+            self.unit = message[0]
+            self._next_reply = f"{self.unit} 2.0000 12 SCCM"
+            return
+        super()._handle_write(data)
+
 
 class PressureClient(MockAlicatClient):
     def __init__(self, address: str, **_options) -> None:
@@ -139,8 +147,44 @@ class AlicatTests(unittest.IsolatedAsyncioTestCase):
         messages = [
             call.args[0].decode().strip() for call in clients[0].writer.write.call_args_list
         ]
-        self.assertEqual(applied, 1.23)
-        self.assertEqual(messages, ["AR122", "A", "AS1.23"])
+        self.assertEqual(applied, (1.23, "SCCM"))
+        self.assertEqual(messages, ["AR122", "A", "AFPF 5", "AS1.23"])
+
+    async def test_refuses_flow_above_the_device_full_scale(self) -> None:
+        clients: list[MassFlowClient] = []
+
+        def client(address: str, **_options):
+            controller = MassFlowClient(address)
+            clients.append(controller)
+            return controller
+
+        with (
+            patch("alicat.driver.SerialClient", side_effect=client),
+            self.assertRaisesRegex(DeviceError, "full scale of 2 SCCM"),
+        ):
+            await set_alicat_flow("/dev/mock", 2.01)
+
+        messages = [
+            call.args[0].decode().strip() for call in clients[0].writer.write.call_args_list
+        ]
+        self.assertEqual(messages, ["AR122", "A", "AFPF 5"])
+
+    async def test_zero_flow_does_not_depend_on_the_full_scale_query(self) -> None:
+        clients: list[MassFlowClient] = []
+
+        def client(address: str, **_options):
+            controller = MassFlowClient(address)
+            clients.append(controller)
+            return controller
+
+        with patch("alicat.driver.SerialClient", side_effect=client):
+            applied = await set_alicat_flow("/dev/mock", 0.0)
+
+        messages = [
+            call.args[0].decode().strip() for call in clients[0].writer.write.call_args_list
+        ]
+        self.assertEqual(applied, (0.0, None))
+        self.assertEqual(messages, ["AR122", "A", "AS0.00"])
 
     async def test_refuses_to_change_pressure_control_mode(self) -> None:
         clients: list[PressureClient] = []
