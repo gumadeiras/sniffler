@@ -35,14 +35,30 @@ class ConfigurationTests(unittest.TestCase):
         )
 
         self.assertEqual(settings.labjack_serial, 320123456)
-        self.assertEqual(settings.alicat_port, "COM3")
-        self.assertEqual(settings.alicat_unit, "B")
-        self.assertEqual(settings.alicat_baud_rate, 9600)
-        self.assertEqual(settings.alicat_timeout_seconds, 0.5)
-        self.assertEqual(settings.alicat_minimum_flow, -2.0)
-        self.assertEqual(settings.alicat_maximum_flow, 2.0)
-        self.assertTrue(settings.alicat_allow_negative_flow)
-        self.assertEqual(settings.alicat_units, {"mass_flow": "SCCM"})
+        alicat = settings.alicats["default"]
+        self.assertEqual(alicat.port, "COM3")
+        self.assertEqual(alicat.unit, "B")
+        self.assertEqual(alicat.baud_rate, 9600)
+        self.assertEqual(alicat.timeout_seconds, 0.5)
+        self.assertEqual(alicat.minimum_flow, -2.0)
+        self.assertEqual(alicat.maximum_flow, 2.0)
+        self.assertTrue(alicat.allow_negative_flow)
+        self.assertEqual(alicat.units, {"mass_flow": "SCCM"})
+
+    def test_loads_multiple_named_alicats(self) -> None:
+        settings = self.load(
+            """
+            [alicat.mfc-500]
+            port = "COM3"
+
+            [alicat.mfc-2000]
+            port = "COM4"
+            """
+        )
+
+        self.assertEqual(set(settings.alicats), {"mfc-500", "mfc-2000"})
+        self.assertEqual(settings.alicats["mfc-500"].port, "COM3")
+        self.assertEqual(settings.alicats["mfc-2000"].port, "COM4")
 
     def test_rejects_unknown_settings(self) -> None:
         with self.assertRaisesRegex(ConfigError, "maximum_flwo"):
@@ -60,8 +76,9 @@ class ConfigurationTests(unittest.TestCase):
         example = Path(__file__).parents[1] / "lab.toml.example"
         settings = load_settings(example)
 
-        self.assertIsNone(settings.alicat_maximum_flow)
-        self.assertEqual(settings.alicat_units, {})
+        alicat = settings.alicats["main"]
+        self.assertIsNone(alicat.maximum_flow)
+        self.assertEqual(alicat.units, {})
 
 
 if __name__ == "__main__":

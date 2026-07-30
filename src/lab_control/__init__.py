@@ -1,1 +1,1 @@
-"""Control a LabJack U3 and an Alicat mass flow controller."""
+"""Control a LabJack U3 and Alicat mass flow controllers."""

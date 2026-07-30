@@ -3,7 +3,7 @@
 This project provides a small command-line tool for:
 
 - a LabJack U3;
-- an Alicat mass flow controller (MFC).
+- one or more Alicat mass flow controllers (MFCs).
 
 The Python layer supports macOS, Linux, and Windows. The current physical
 devices have been tested on macOS.
@@ -20,7 +20,9 @@ The tool applies these rules:
 - A configured flow limit can make the allowed range smaller.
 - Negative flow is disabled unless `allow_negative_flow` is `true`.
 - A flow command is refused unless the Alicat control point is `mass flow`.
+- A flow command is refused unless the Alicat setpoint source is `U`.
 - The tool never changes the Alicat control point.
+- The tool never changes the Alicat setpoint source.
 - The Alicat driver applies setpoints with a resolution of 0.01 device units.
 - A LabJack digital command is refused if the selected FIO line is analog.
 - A LabJack digital command changes the line direction to output.
@@ -45,9 +47,10 @@ The LabJack U3 does not use the newer LJM driver.
 ### Alicat MFC
 
 Connect the Alicat serial cable or USB-to-serial adapter. Install the adapter
-driver if the operating system does not show a serial port. Set the Alicat input
-mode to `Serial`. The default project settings are 19200 baud and a 0.15 second
-timeout.
+driver if the operating system does not show a serial port. Set the Alicat
+setpoint source to `U`. This mode permits serial control and resets the setpoint
+to zero at power-up. The default project settings are 19200 baud and a
+0.15 second timeout.
 
 ## 2. Install the project
 
@@ -81,7 +84,7 @@ manuals. Do not guess the units or safe limits.
 [labjack]
 serial = 320000000
 
-[alicat]
+[alicat.main]
 port = "/dev/cu.usbserial-EXAMPLE"
 unit = "A"
 baud_rate = 19200
@@ -93,7 +96,7 @@ allow_negative_flow = false
 # maximum_flow = <stricter experiment maximum>
 
 # Add each verified unit:
-# [alicat.units]
+# [alicat.main.units]
 # pressure = "<verified pressure unit>"
 # temperature = "<verified temperature unit>"
 # volumetric_flow = "<verified volumetric-flow unit>"
@@ -103,6 +106,18 @@ allow_negative_flow = false
 `lab.toml` is local and is not committed to Git. Unknown or invalid settings
 cause a clear configuration error. `minimum_flow` and `maximum_flow` are
 optional experiment limits in the current Alicat mass-flow unit.
+
+Use one table for each Alicat when the computer has more than one controller:
+
+```toml
+[alicat.mfc-500]
+port = "/dev/cu.usbserial-FIRST"
+
+[alicat.mfc-2000]
+port = "/dev/cu.usbserial-SECOND"
+```
+
+The table names are the names used with `--name`.
 
 ## 4. Check the connections
 
@@ -124,6 +139,13 @@ Check both configured devices:
 ```text
 uv run lab-control labjack status
 uv run lab-control alicat status
+```
+
+Select each controller by name when `lab.toml` contains more than one Alicat:
+
+```text
+uv run lab-control alicat status --name mfc-500
+uv run lab-control alicat status --name mfc-2000
 ```
 
 The Alicat reports numeric values without unit names. The tool adds the units
@@ -156,15 +178,20 @@ Set the mass-flow setpoint:
 uv run lab-control alicat set-flow 1.0
 ```
 
+Add `--name`, for example `--name mfc-500`, when more than one Alicat is
+configured.
+
 Set the mass-flow setpoint to zero:
 
 ```text
 uv run lab-control alicat stop
 ```
 
-Both commands first read the current control point. They stop without sending a
-setpoint if the control point is not `mass flow`. Change the control point on
-the Alicat itself, confirm the gas system, and then retry.
+Both commands first read the current control point and setpoint source. They
+stop without sending a setpoint unless the control point is `mass flow` and the
+source is `U`. Source `U` permits serial control and resets the setpoint to zero
+at power-up. Change these settings on the Alicat itself, confirm the gas system,
+and then retry.
 
 Before each nonzero command, `set-flow` reads the mass-flow full scale and unit
 from the Alicat. It refuses values outside the device range. `maximum_flow` is
@@ -196,6 +223,8 @@ uv run lab-control --config another-lab.toml alicat status
   unit ID, and `Serial` input mode.
 - `Refusing to change the setpoint`: the Alicat is not in mass-flow control
   mode. No setpoint was sent.
+- `Set the source to U`: the Alicat uses an analog or saved setpoint source.
+  Select source `U` on the controller before you use serial control.
 - `FIO... is configured as analog`: select a configured digital line or change
   the LabJack configuration with the official LabJack software.
 - `Cannot connect to the LabJack U3`: confirm the UD driver on Windows or the

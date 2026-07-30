@@ -11,6 +11,13 @@ class DeviceError(RuntimeError):
     """A hardware command failed."""
 
 
+_ALICAT_SETPOINT_SOURCES = {
+    "A": "analog",
+    "S": "serial or display, saved",
+    "U": "serial or display, zero on power-up",
+}
+
+
 def normalize_alicat_flow(flow_rate: float) -> float:
     """Return the exact value that the Alicat driver will send."""
     if not math.isfinite(flow_rate):
@@ -39,6 +46,23 @@ async def _read_alicat_mass_flow_full_scale(controller: Any) -> tuple[float, str
             f"Invalid Alicat mass-flow full-scale response {response!r}; no setpoint was sent."
         )
     return maximum, flow_unit
+
+
+async def _read_alicat_setpoint_source(controller: Any) -> str:
+    """Read the Alicat setpoint source."""
+    try:
+        response = await controller._write_and_read(f"{controller.unit}LSS")
+    except Exception as error:
+        raise DeviceError(f"Cannot read the Alicat setpoint source: {error}") from error
+
+    values = response.split() if isinstance(response, str) else []
+    if (
+        len(values) != 2
+        or values[0] != controller.unit
+        or values[1] not in _ALICAT_SETPOINT_SOURCES
+    ):
+        raise DeviceError(f"Invalid Alicat setpoint-source response {response!r}.")
+    return values[1]
 
 
 def list_serial_ports() -> list[tuple[str, str]]:
@@ -174,9 +198,16 @@ async def alicat_status(
     """Read the current Alicat state."""
     async with _open_alicat(port, unit, baud_rate, timeout_seconds) as controller:
         try:
-            return await controller.get()
+            state = await controller.get()
         except Exception as error:
             raise DeviceError(f"Cannot read the Alicat MFC: {error}") from error
+        try:
+            source = await _read_alicat_setpoint_source(controller)
+        except DeviceError:
+            state["setpoint_source"] = "unavailable"
+        else:
+            state["setpoint_source"] = _ALICAT_SETPOINT_SOURCES[source]
+        return state
 
 
 async def set_alicat_flow(
@@ -202,6 +233,19 @@ async def set_alicat_flow(
             raise DeviceError(
                 f"Refusing to change the setpoint while the control point is {control_point!r}. "
                 "Set the controller to mass flow first."
+            )
+
+        try:
+            source = await _read_alicat_setpoint_source(controller)
+        except DeviceError as error:
+            raise DeviceError(
+                f"Cannot confirm the Alicat setpoint source; no setpoint was sent: {error}"
+            ) from error
+        if source != "U":
+            description = _ALICAT_SETPOINT_SOURCES[source]
+            raise DeviceError(
+                f"Refusing to change the setpoint while its source is {description}. "
+                "Set the source to U for serial control with zero on power-up."
             )
 
         flow_unit = None

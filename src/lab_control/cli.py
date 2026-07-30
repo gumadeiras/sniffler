@@ -10,7 +10,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from lab_control import hardware
-from lab_control.config import ConfigError, Settings, load_settings
+from lab_control.config import AlicatSettings, ConfigError, Settings, load_settings
 
 
 def _run_with_homebrew_exodriver(argv: Sequence[str] | None) -> int | None:
@@ -65,6 +65,10 @@ def _add_labjack_connection(parser: argparse.ArgumentParser) -> None:
 
 def _add_alicat_connection(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
+        "--name",
+        help="Configured Alicat name. Required when lab.toml contains more than one Alicat.",
+    )
+    parser.add_argument(
         "--port", help="Override the Alicat port in lab.toml, such as COM3 or /dev/ttyUSB0."
     )
     parser.add_argument(
@@ -81,20 +85,35 @@ def _labjack_serial(arguments: argparse.Namespace, settings: Settings) -> int | 
     return serial
 
 
+def _select_alicat(arguments: argparse.Namespace, settings: Settings) -> tuple[str, AlicatSettings]:
+    if arguments.name:
+        try:
+            return arguments.name, settings.alicats[arguments.name]
+        except KeyError as error:
+            available = ", ".join(sorted(settings.alicats))
+            raise ConfigError(
+                f"Unknown Alicat name {arguments.name!r}. Available names: {available}."
+            ) from error
+    if len(settings.alicats) > 1:
+        available = ", ".join(sorted(settings.alicats))
+        raise ConfigError(f"Select an Alicat with --name. Available names: {available}.")
+    return next(iter(settings.alicats.items()))
+
+
 def _alicat_connection(
-    arguments: argparse.Namespace, settings: Settings
+    arguments: argparse.Namespace, settings: AlicatSettings
 ) -> tuple[str, str, int, float]:
-    port = arguments.port or settings.alicat_port
+    port = arguments.port or settings.port
     if not port:
-        raise ConfigError("Set alicat.port in lab.toml or use --port.")
+        raise ConfigError("Set the selected Alicat port in lab.toml or use --port.")
     if not port.strip():
         raise ConfigError("The Alicat port must not be empty.")
-    unit = arguments.unit or settings.alicat_unit
-    return port, unit, settings.alicat_baud_rate, settings.alicat_timeout_seconds
+    unit = arguments.unit or settings.unit
+    return port, unit, settings.baud_rate, settings.timeout_seconds
 
 
-def _alicat_units(settings: Settings, control_point: object) -> dict[str, str]:
-    units = dict(settings.alicat_units)
+def _alicat_units(settings: AlicatSettings, control_point: object) -> dict[str, str]:
+    units = dict(settings.units)
     if control_point == "mass flow" and "mass_flow" in units:
         units["setpoint"] = units["mass_flow"]
     elif control_point == "vol flow" and "volumetric_flow" in units:
@@ -104,18 +123,22 @@ def _alicat_units(settings: Settings, control_point: object) -> dict[str, str]:
     return units
 
 
-def _validate_requested_flow(flow_rate: float, settings: Settings) -> float:
-    maximum = settings.alicat_maximum_flow
-    if flow_rate < 0 and not settings.alicat_allow_negative_flow:
+def _validate_requested_flow(flow_rate: float, settings: AlicatSettings) -> float:
+    maximum = settings.maximum_flow
+    if flow_rate < 0 and not settings.allow_negative_flow:
         raise ConfigError("Negative flow is disabled in lab.toml.")
     applied_flow = hardware.normalize_alicat_flow(flow_rate)
-    if applied_flow < settings.alicat_minimum_flow:
-        unit = settings.alicat_units.get("mass_flow", "current device units")
-        raise ConfigError(f"Flow must be at least {settings.alicat_minimum_flow} {unit}.")
+    if applied_flow < settings.minimum_flow:
+        unit = settings.units.get("mass_flow", "current device units")
+        raise ConfigError(f"Flow must be at least {settings.minimum_flow} {unit}.")
     if maximum is not None and applied_flow > maximum:
-        unit = settings.alicat_units.get("mass_flow", "current device units")
+        unit = settings.units.get("mass_flow", "current device units")
         raise ConfigError(f"Flow must be at most the configured limit of {maximum} {unit}.")
     return applied_flow
+
+
+def _alicat_label(name: str) -> str:
+    return "Alicat" if name == "default" else f"Alicat {name}"
 
 
 def _ports(_arguments: argparse.Namespace, _settings: Settings) -> None:
@@ -147,15 +170,18 @@ def _labjack_set_digital(arguments: argparse.Namespace, settings: Settings) -> N
 
 
 def _alicat_status(arguments: argparse.Namespace, settings: Settings) -> None:
-    connection = _alicat_connection(arguments, settings)
+    name, alicat = _select_alicat(arguments, settings)
+    connection = _alicat_connection(arguments, alicat)
     values = asyncio.run(hardware.alicat_status(*connection))
-    print("Alicat MFC connected.")
-    _print_values(values, _alicat_units(settings, values.get("control_point")))
+    label = "Alicat MFC" if name == "default" else _alicat_label(name)
+    print(f"{label} connected.")
+    _print_values(values, _alicat_units(alicat, values.get("control_point")))
 
 
 def _alicat_set_flow(arguments: argparse.Namespace, settings: Settings) -> None:
-    applied_flow = _validate_requested_flow(arguments.flow_rate, settings)
-    port, unit, baud_rate, timeout_seconds = _alicat_connection(arguments, settings)
+    name, alicat = _select_alicat(arguments, settings)
+    applied_flow = _validate_requested_flow(arguments.flow_rate, alicat)
+    port, unit, baud_rate, timeout_seconds = _alicat_connection(arguments, alicat)
     applied_flow, device_unit = asyncio.run(
         hardware.set_alicat_flow(
             port,
@@ -165,12 +191,13 @@ def _alicat_set_flow(arguments: argparse.Namespace, settings: Settings) -> None:
             timeout_seconds,
         )
     )
-    flow_unit = device_unit or settings.alicat_units.get("mass_flow", "device units")
-    print(f"Alicat mass-flow setpoint changed to {applied_flow:.2f} {flow_unit}.")
+    flow_unit = device_unit or alicat.units.get("mass_flow", "device units")
+    print(f"{_alicat_label(name)} mass-flow setpoint changed to {applied_flow:.2f} {flow_unit}.")
 
 
 def _alicat_stop(arguments: argparse.Namespace, settings: Settings) -> None:
-    port, unit, baud_rate, timeout_seconds = _alicat_connection(arguments, settings)
+    name, alicat = _select_alicat(arguments, settings)
+    port, unit, baud_rate, timeout_seconds = _alicat_connection(arguments, alicat)
     asyncio.run(
         hardware.set_alicat_flow(
             port,
@@ -180,13 +207,13 @@ def _alicat_stop(arguments: argparse.Namespace, settings: Settings) -> None:
             timeout_seconds,
         )
     )
-    print("Alicat mass-flow setpoint changed to zero.")
+    print(f"{_alicat_label(name)} mass-flow setpoint changed to zero.")
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="lab-control",
-        description="Control a LabJack U3 and an Alicat mass flow controller.",
+        description="Control a LabJack U3 and Alicat mass flow controllers.",
     )
     parser.add_argument(
         "--config",
@@ -234,7 +261,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     set_flow = alicat_commands.add_parser("set-flow", help="Set the mass flow rate.")
     set_flow.add_argument(
-        "flow_rate", type=_finite_float, help="Target in the configured mass-flow unit."
+        "flow_rate", type=_finite_float, help="Target in the device mass-flow unit."
     )
     _add_alicat_connection(set_flow)
     set_flow.set_defaults(handler=_alicat_set_flow)

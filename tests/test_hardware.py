@@ -86,9 +86,23 @@ class MassFlowClient(MockAlicatClient):
 
     def _handle_write(self, data: bytes) -> None:
         message = data.decode().strip()
+        if message[1:] == "LSS":
+            self.unit = message[0]
+            self._next_reply = f"{self.unit} U"
+            return
         if message[1:] == "FPF 5":
             self.unit = message[0]
             self._next_reply = f"{self.unit} 2.0000 12 SCCM"
+            return
+        super()._handle_write(data)
+
+
+class AnalogSetpointClient(MassFlowClient):
+    def _handle_write(self, data: bytes) -> None:
+        message = data.decode().strip()
+        if message[1:] == "LSS":
+            self.unit = message[0]
+            self._next_reply = f"{self.unit} A"
             return
         super()._handle_write(data)
 
@@ -132,6 +146,7 @@ class AlicatTests(unittest.IsolatedAsyncioTestCase):
             options,
             [{"address": "/dev/mock", "baudrate": 9600, "timeout": 0.5}],
         )
+        self.assertEqual(state["setpoint_source"], "serial or display, zero on power-up")
 
     async def test_rounds_and_sets_flow_without_an_extra_status_read(self) -> None:
         clients: list[MassFlowClient] = []
@@ -148,7 +163,7 @@ class AlicatTests(unittest.IsolatedAsyncioTestCase):
             call.args[0].decode().strip() for call in clients[0].writer.write.call_args_list
         ]
         self.assertEqual(applied, (1.23, "SCCM"))
-        self.assertEqual(messages, ["AR122", "A", "AFPF 5", "AS1.23"])
+        self.assertEqual(messages, ["AR122", "A", "ALSS", "AFPF 5", "AS1.23"])
 
     async def test_refuses_flow_above_the_device_full_scale(self) -> None:
         clients: list[MassFlowClient] = []
@@ -167,7 +182,7 @@ class AlicatTests(unittest.IsolatedAsyncioTestCase):
         messages = [
             call.args[0].decode().strip() for call in clients[0].writer.write.call_args_list
         ]
-        self.assertEqual(messages, ["AR122", "A", "AFPF 5"])
+        self.assertEqual(messages, ["AR122", "A", "ALSS", "AFPF 5"])
 
     async def test_zero_flow_does_not_depend_on_the_full_scale_query(self) -> None:
         clients: list[MassFlowClient] = []
@@ -184,7 +199,26 @@ class AlicatTests(unittest.IsolatedAsyncioTestCase):
             call.args[0].decode().strip() for call in clients[0].writer.write.call_args_list
         ]
         self.assertEqual(applied, (0.0, None))
-        self.assertEqual(messages, ["AR122", "A", "AS0.00"])
+        self.assertEqual(messages, ["AR122", "A", "ALSS", "AS0.00"])
+
+    async def test_refuses_an_analog_setpoint_source(self) -> None:
+        clients: list[AnalogSetpointClient] = []
+
+        def client(address: str, **_options):
+            controller = AnalogSetpointClient(address)
+            clients.append(controller)
+            return controller
+
+        with (
+            patch("alicat.driver.SerialClient", side_effect=client),
+            self.assertRaisesRegex(DeviceError, "source is analog"),
+        ):
+            await set_alicat_flow("/dev/mock", 1.0)
+
+        messages = [
+            call.args[0].decode().strip() for call in clients[0].writer.write.call_args_list
+        ]
+        self.assertEqual(messages, ["AR122", "A", "ALSS"])
 
     async def test_refuses_to_change_pressure_control_mode(self) -> None:
         clients: list[PressureClient] = []

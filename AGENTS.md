@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This repository controls a LabJack U3 and an Alicat mass flow controller.
+This repository controls a LabJack U3 and one or more Alicat mass flow controllers.
 Scientists must be able to use the command line without reading Python code.
 
 ## Rules

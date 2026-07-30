@@ -9,11 +9,15 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from lab_control.cli import _finite_float, _run_with_homebrew_exodriver, main
-from lab_control.config import Settings
+from lab_control.config import AlicatSettings, Settings
 from lab_control.hardware import DeviceError
 
 
 class CommandLineTests(unittest.TestCase):
+    @staticmethod
+    def settings_with_alicat(name: str = "default", **values) -> Settings:
+        return Settings(alicats={name: AlicatSettings(**values)})
+
     def run_command(
         self, arguments: list[str], settings: Settings | None = None
     ) -> tuple[int, str, str]:
@@ -53,7 +57,7 @@ class CommandLineTests(unittest.TestCase):
     @patch("lab_control.cli.hardware.set_alicat_flow", new_callable=AsyncMock)
     def test_routes_alicat_stop_connection(self, set_flow) -> None:
         set_flow.return_value = (0.0, None)
-        settings = Settings(alicat_port="COM3", alicat_unit="B", alicat_baud_rate=9600)
+        settings = self.settings_with_alicat(port="COM3", unit="B", baud_rate=9600)
 
         status, output, errors = self.run_command(["alicat", "stop"], settings)
 
@@ -64,20 +68,38 @@ class CommandLineTests(unittest.TestCase):
     @patch("lab_control.cli.hardware.set_alicat_flow", new_callable=AsyncMock)
     def test_uses_the_device_unit_without_a_configured_maximum(self, set_flow) -> None:
         set_flow.return_value = (1.23, "SCCM")
-        settings = Settings(alicat_port="COM3")
+        settings = self.settings_with_alicat("mfc-500", port="COM3")
 
-        status, output, errors = self.run_command(["alicat", "set-flow", "1.234"], settings)
+        status, output, errors = self.run_command(
+            ["alicat", "set-flow", "1.234", "--name", "mfc-500"], settings
+        )
 
         self.assertEqual((status, errors), (0, ""))
-        self.assertEqual(output, "Alicat mass-flow setpoint changed to 1.23 SCCM.\n")
+        self.assertEqual(output, "Alicat mfc-500 mass-flow setpoint changed to 1.23 SCCM.\n")
         set_flow.assert_awaited_once_with("COM3", 1.23, "A", 19200, 0.15)
 
     @patch("lab_control.cli.hardware.set_alicat_flow", new_callable=AsyncMock)
-    def test_rejects_flow_outside_configured_limits(self, set_flow) -> None:
+    def test_requires_a_name_for_multiple_alicats(self, set_flow) -> None:
         settings = Settings(
-            alicat_port="COM3",
-            alicat_maximum_flow=2.0,
-            alicat_units={"mass_flow": "SCCM"},
+            alicats={
+                "mfc-500": AlicatSettings(port="COM3"),
+                "mfc-2000": AlicatSettings(port="COM4"),
+            }
+        )
+
+        status, output, errors = self.run_command(["alicat", "set-flow", "1.0"], settings)
+
+        self.assertEqual((status, output), (2, ""))
+        self.assertIn("Select an Alicat with --name", errors)
+        self.assertIn("mfc-2000, mfc-500", errors)
+        set_flow.assert_not_awaited()
+
+    @patch("lab_control.cli.hardware.set_alicat_flow", new_callable=AsyncMock)
+    def test_rejects_flow_outside_configured_limits(self, set_flow) -> None:
+        settings = self.settings_with_alicat(
+            port="COM3",
+            maximum_flow=2.0,
+            units={"mass_flow": "SCCM"},
         )
 
         status, output, errors = self.run_command(["alicat", "set-flow", "3.0"], settings)
@@ -88,10 +110,10 @@ class CommandLineTests(unittest.TestCase):
 
     @patch("lab_control.cli.hardware.set_alicat_flow", new_callable=AsyncMock)
     def test_checks_rounded_flow_against_the_safe_maximum(self, set_flow) -> None:
-        settings = Settings(
-            alicat_port="COM3",
-            alicat_maximum_flow=1.235,
-            alicat_units={"mass_flow": "SCCM"},
+        settings = self.settings_with_alicat(
+            port="COM3",
+            maximum_flow=1.235,
+            units={"mass_flow": "SCCM"},
         )
 
         status, output, errors = self.run_command(["alicat", "set-flow", "1.235"], settings)
