@@ -4,6 +4,7 @@ import contextlib
 import io
 import os
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from lab_control.cli import _run_with_homebrew_exodriver, main
@@ -69,7 +70,7 @@ class CommandLineTests(unittest.TestCase):
 
         self.assertEqual(status, 0)
         environment = run.call_args.kwargs["env"]
-        self.assertEqual(environment["DYLD_LIBRARY_PATH"], "/opt/homebrew/lib")
+        self.assertEqual(environment["DYLD_LIBRARY_PATH"], str(Path("/opt/homebrew/lib")))
 
 
 if __name__ == "__main__":
