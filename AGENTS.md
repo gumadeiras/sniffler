@@ -20,7 +20,7 @@ Scientists must be able to use the command line without reading Python code.
 
 ## Validation
 
-Run these commands before each handoff:
+Run these commands before handoff after code, dependency, or packaging changes. For documentation-only changes, verify the changed commands and links; also run the required build when the changed document is a build or packaging input, including README.md. Read-only answers do not require these checks:
 
 ```text
 uv sync --group dev
