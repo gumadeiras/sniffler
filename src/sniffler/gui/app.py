@@ -423,6 +423,8 @@ class MainWindow(QMainWindow):
             duration = "duration unknown until the recipe is valid"
         name = recipe.name or "(no name)"
         self._recipe_summary.setText(f"{name}: {trials or 'no trials'}; {duration}")
+        if not self.controller.is_running:
+            self.run_view.preview(recipe)
         seed = recipe.schedule.seed
         self._seed_label.setText(
             "random, saved in the manifest" if seed is None else f"{seed} (from the recipe)"
@@ -481,7 +483,6 @@ class MainWindow(QMainWindow):
 
     def _on_sample(self, sample: Sample) -> None:
         self.run_view.plot.add_sample(sample)
-        self.run_view.status_panel.show_sample(sample)
 
     def _on_event(self, event: Event) -> None:
         self.run_view.show_event(event, self.controller.elapsed_seconds())

@@ -73,9 +73,9 @@ class DemoTests(unittest.TestCase):
         self.assertEqual(status.phase, Phase.DONE, status.message)
         self.assertEqual(warnings, [])
         self.assertEqual(window.run_view.status_panel.squirrel.cue_name, "valve A")
-        readback = window.run_view.status_panel._readback.text()
-        self.assertIn("carrier flow", readback)
-        self.assertIn("odor flow", readback)
+        cells = window.run_view.plot._cells
+        self.assertNotEqual(cells["carrier flow"]["measured"].text(), "—")
+        self.assertNotEqual(cells["odor flow"]["measured"].text(), "—")
         history = window.run_view.plot._history["carrier flow"]
         self.assertGreater(len(history), 0)
         self.assertGreater(len(history), 8)

@@ -322,13 +322,16 @@ class TimelineTests(GuiTestCase):
     def test_lanes_show_when_each_valve_is_planned_open(self) -> None:
         from sniffler.gui.timeline import TimelineWidget
 
-        timeline = TimelineWidget()
+        timeline = TimelineWidget(RIG.valves)
+        height = timeline.minimumHeight()
         timeline.set_plan(make_recipe(0.5), ("odor", "blank", "odor", "blank"))
 
-        self.assertEqual(timeline.lanes(), {"odor-1": [(0.0, 0.5), (1.5, 2.0)]})
-        self.assertEqual(timeline.closed_all_run, ["odor-2", "final"])
+        self.assertEqual(
+            timeline.lanes(), {"odor-1": [(0.0, 0.5), (1.5, 2.0)], "odor-2": [], "final": []}
+        )
+        self.assertEqual(timeline.minimumHeight(), height, "a plan does not change the height")
         timeline.clear()
-        self.assertEqual(timeline.lanes(), {})
+        self.assertEqual(timeline.lanes(), {"odor-1": [], "odor-2": [], "final": []})
 
     def test_adjacent_open_steps_merge_into_one_interval(self) -> None:
         from sniffler.gui.timeline import TimelineWidget
@@ -339,9 +342,20 @@ class TimelineTests(GuiTestCase):
             Schedule({"t": 1}, "block-randomized", 1),
             make_recipe(0.5).shutdown,
         )
-        timeline = TimelineWidget()
+        timeline = TimelineWidget(RIG.valves)
         timeline.set_plan(recipe, ("t",))
-        self.assertEqual(timeline.lanes(), {"odor-1": [(0.0, 1.0)]})
+        self.assertEqual(timeline.lanes()["odor-1"], [(0.0, 1.0)])
+
+    def test_run_view_lanes_follow_the_valves_the_recipe_opens(self) -> None:
+        from sniffler.gui.run_view import RunView
+
+        view = RunView(RIG, reduced_motion=True)
+        self.assertEqual(view.timeline.lanes(), {})
+        view.preview(make_recipe(0.5))
+        self.assertEqual(list(view.timeline.lanes()), ["odor-1"])
+        height = view.timeline.minimumHeight()
+        view.prepare(make_recipe(0.5))
+        self.assertEqual(view.timeline.minimumHeight(), height)
 
 
 class SniffCueTests(GuiTestCase):
@@ -470,7 +484,8 @@ class MainWindowTests(GuiTestCase):
         self.assertEqual(window.run_view.status_panel._phase.text(), "done")
         self.assertIn("4 of 4", window.run_view.status_panel._trial.text())
         self.assertGreater(len(window.run_view.plot._history["mfc-500"]), 0)
-        self.assertIn("mfc-500", window.run_view.status_panel._readback.text())
+        self.assertIn("within limit", window.run_view.plot._labels["mfc-500"].text())
+        self.assertIn("SCCM", window.run_view.plot._cells["mfc-500"]["measured"].text())
         self.assertTrue(window.start_button.isEnabled())
         self.assertEqual(window.warnings, [])
         manifest = (status.run_directory / "manifest.json").read_text()

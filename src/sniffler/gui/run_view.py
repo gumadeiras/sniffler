@@ -1,4 +1,10 @@
-"""Watch a run: the squirrel and status, the timeline with valve lanes, the MFC plot."""
+"""Watch a run: the squirrel and status, the timeline with valve lanes, the MFC plot.
+
+Every box on this tab keeps its size and place while a run changes the content.
+Labels have fixed heights, numbers use a fixed-pitch font in fixed-width cells, the
+plot axes are fixed at run start, and a splitter, not the content, decides how the
+width is shared.
+"""
 
 import queue
 from collections import deque
@@ -8,13 +14,16 @@ from typing import Any
 
 import pyqtgraph as pg
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFontDatabase
+from PySide6.QtGui import QColor, QFontDatabase, QFontMetrics
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFormLayout,
+    QGridLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QScrollArea,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -29,6 +38,9 @@ from sniffler.recipe import Recipe, RigMap
 
 DEVIATION_FRACTION = 0.05
 PLOT_POINTS = 6000
+STEP_ROWS = 4
+SQUIRREL_PX = 128
+AXIS_WIDTH_PX = 64
 
 
 class RunController(QObject):
@@ -132,54 +144,133 @@ class RunController(QObject):
                 self.finished.emit(final)
 
 
+def _fixed_font() -> Any:
+    font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+    font.setPixelSize(theme.BODY_PX)
+    return font
+
+
+def _one_line(label: QLabel) -> QLabel:
+    """A label that never wraps or grows; the full text stays in the tooltip."""
+    label.setWordWrap(False)
+    label.setFixedHeight(QFontMetrics(label.font()).lineSpacing() + theme.UNIT // 2)
+    label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+    return label
+
+
+def _valves_text(valves: dict[str, bool]) -> str:
+    """Name the open valves; count the closed ones. Twelve names of 'closed' say nothing."""
+    if not valves:
+        return "—"
+    opened = [name for name, state in valves.items() if state]
+    closed = len(valves) - len(opened)
+    if not opened:
+        return f"all {closed} closed"
+    text = ", ".join(f"{name} open" for name in opened)
+    if closed:
+        text += f"; {closed} closed"
+    return text
+
+
 class MfcPlot(QWidget):
-    """Commanded versus actual flow for every MFC, with the deviation stated in words."""
+    """Commanded versus measured flow, with one fixed-format readout row per MFC."""
 
     def __init__(self, rig: RigMap, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._rig = rig
         self._plot = pg.PlotWidget(background=theme.PANEL)
-        self._plot.addLegend(offset=(10, 10), labelTextColor=theme.NAVY)
         self._plot.setLabel("bottom", "run time", units="s", color=theme.INK_SOFT)
         self._plot.setLabel("left", "mass flow", color=theme.INK_SOFT)
         self._plot.showGrid(x=True, y=True, alpha=0.15)
+        self._plot.hideButtons()
+        self._plot.setMenuEnabled(False)
+        self._plot.setMouseEnabled(x=False, y=False)
         for axis in ("bottom", "left"):
             self._plot.getAxis(axis).setPen(pg.mkPen(theme.LINE))
             self._plot.getAxis(axis).setTextPen(pg.mkPen(theme.INK_SOFT))
+        # A fixed axis width: tick labels growing from 0.9 to 1000 must not move the plot.
+        self._plot.getAxis("left").setWidth(AXIS_WIDTH_PX)
+        self._plot.getAxis("left").enableAutoSIPrefix(False)
+        self._plot.getAxis("bottom").enableAutoSIPrefix(False)
         self._commanded: dict[str, Any] = {}
         self._actual: dict[str, Any] = {}
         self._history: dict[str, deque[tuple[float, float | None, float | None]]] = {}
-        self._labels: dict[str, QLabel] = {}
-        labels = QVBoxLayout()
-        labels.setSpacing(theme.GAP // 2)
-        for index, name in enumerate(rig.mfcs):
-            color = QColor(theme.SERIES[index % len(theme.SERIES)])
+        self._cells: dict[str, dict[str, QLabel]] = {}
+        self._labels: dict[str, QLabel] = {}  # the verdict cell, in words
+        readout = QGridLayout()
+        readout.setHorizontalSpacing(theme.SECTION_GAP)
+        readout.setVerticalSpacing(theme.GAP // 2)
+        for column, title in enumerate(("", "commanded", "measured", "deviation", "")):
+            header = QLabel(title)
+            header.setStyleSheet(f"color: {theme.INK_SOFT};")
+            readout.addWidget(header, 0, column, alignment=Qt.AlignRight)
+        number_width = QFontMetrics(_fixed_font()).horizontalAdvance("+00000.00 SCCM")
+        for row, (name, mfc) in enumerate(rig.mfcs.items(), start=1):
+            color = QColor(theme.SERIES[(row - 1) % len(theme.SERIES)])
             self._commanded[name] = self._plot.plot(
                 pen=pg.mkPen(color, width=2, style=Qt.DashLine), name=f"{name} commanded"
             )
             self._actual[name] = self._plot.plot(
-                pen=pg.mkPen(color, width=2), name=f"{name} actual"
+                pen=pg.mkPen(color, width=2), name=f"{name} measured"
             )
             self._history[name] = deque(maxlen=PLOT_POINTS)
-            label = QLabel(f"{name}: no reading yet")
-            label.setWordWrap(True)
-            self._labels[name] = label
-            labels.addWidget(label)
+            title = QLabel(f'<span style="color:{color.name()}">■</span> {name} ({mfc.flow_unit})')
+            readout.addWidget(title, row, 0)
+            cells: dict[str, QLabel] = {}
+            for column, key in enumerate(("commanded", "measured", "deviation"), start=1):
+                cell = QLabel("—")
+                cell.setFont(_fixed_font())
+                cell.setMinimumWidth(number_width)
+                cell.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                readout.addWidget(cell, row, column)
+                cells[key] = cell
+            verdict = QLabel("")
+            verdict.setMinimumWidth(
+                QFontMetrics(theme.font(bold=True)).horizontalAdvance("HIGH deviation")
+            )
+            readout.addWidget(verdict, row, 4)
+            cells["verdict"] = verdict
+            self._cells[name] = cells
+            self._labels[name] = verdict
+        readout.setColumnStretch(5, 1)
+        caption = QLabel("dashed commanded, solid measured")
+        caption.setStyleSheet(f"color: {theme.INK_SOFT};")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(theme.GAP)
         layout.addWidget(self._plot, stretch=1)
-        layout.addLayout(labels)
+        layout.addWidget(caption)
+        layout.addLayout(readout)
         if not rig.mfcs:
             layout.addWidget(QLabel("lab.toml has no MFC with a port."))
+        self.clear()
 
     def clear(self) -> None:
         for name in self._history:
             self._history[name].clear()
             self._commanded[name].setData([], [])
             self._actual[name].setData([], [])
-            self._labels[name].setText(f"{name}: no reading yet")
-            self._labels[name].setStyleSheet("")
+            for key in ("commanded", "measured", "deviation"):
+                self._cells[name][key].setText("—")
+            self._cells[name]["verdict"].setText("")
+            self._cells[name]["verdict"].setStyleSheet("")
+            self._cells[name]["verdict"].setToolTip("")
+        self._plot.setXRange(0.0, 1.0, padding=0.02)
+        self._plot.setYRange(0.0, 1.0, padding=0.05)
+
+    def set_ranges(self, recipe: Recipe, planned_seconds: float) -> None:
+        """Fix both axes for the whole run, so the picture never jumps."""
+        values = [
+            value
+            for trial in recipe.trials
+            for step in trial.steps
+            for value in step.setpoints.values()
+        ] + list(recipe.shutdown.setpoints.values())
+        high = max([0.0, *values])
+        low = min([0.0, *values])
+        span = max(high - low, 1.0)
+        self._plot.setYRange(low - 0.05 * span, high + 0.1 * span, padding=0)
+        self._plot.setXRange(0.0, max(planned_seconds, 1.0), padding=0.02)
 
     def add_sample(self, sample: Sample) -> None:
         history = self._history.get(sample.mfc)
@@ -197,41 +288,34 @@ class MfcPlot(QWidget):
 
     def _describe(self, sample: Sample) -> None:
         mfc = self._rig.mfcs[sample.mfc]
-        unit = mfc.flow_unit
-        label = self._labels[sample.mfc]
-        if sample.mass_flow is None or sample.commanded_setpoint is None:
-            actual = "?" if sample.mass_flow is None else f"{sample.mass_flow:.2f}"
-            label.setText(f"{sample.mfc}: actual {actual} {unit}, no setpoint commanded yet")
-            label.setStyleSheet("")
+        cells = self._cells[sample.mfc]
+        cells["measured"].setText(
+            "—" if sample.mass_flow is None else f"{sample.mass_flow:.2f} {mfc.flow_unit}"
+        )
+        if sample.commanded_setpoint is None:
+            cells["commanded"].setText("—")
+            cells["deviation"].setText("—")
+            cells["verdict"].setText("")
+            return
+        cells["commanded"].setText(f"{sample.commanded_setpoint:.2f} {mfc.flow_unit}")
+        if sample.mass_flow is None:
+            cells["deviation"].setText("—")
+            cells["verdict"].setText("no reading")
             return
         deviation = sample.mass_flow - sample.commanded_setpoint
         reference = mfc.full_scale or mfc.maximum_flow or abs(sample.commanded_setpoint) or 1.0
         limit = max(DEVIATION_FRACTION * reference, 0.01)
         high = abs(deviation) > limit
-        verdict = f"HIGH deviation, more than {limit:.2f}" if high else "within limit"
-        label.setText(
-            f"{sample.mfc}: commanded {sample.commanded_setpoint:.2f}, "
-            f"actual {sample.mass_flow:.2f} {unit}, deviation {deviation:+.2f}: {verdict}"
+        cells["deviation"].setText(f"{deviation:+.2f} {mfc.flow_unit}")
+        cells["verdict"].setText("HIGH deviation" if high else "within limit")
+        cells["verdict"].setToolTip(f"The limit is {limit:.2f} {mfc.flow_unit}.")
+        cells["verdict"].setStyleSheet(
+            f"color: {theme.PINK_TEXT}; font-weight: bold;" if high else ""
         )
-        label.setStyleSheet(f"color: {theme.PINK_TEXT}; font-weight: bold;" if high else "")
-
-
-def _valves_text(valves: dict[str, bool]) -> str:
-    """Name the open valves; count the closed ones. Twelve names of 'closed' say nothing."""
-    if not valves:
-        return "—"
-    opened = [name for name, state in valves.items() if state]
-    closed = len(valves) - len(opened)
-    if not opened:
-        return f"all {closed} closed"
-    text = ", ".join(f"{name} open" for name in opened)
-    if closed:
-        text += f"; {closed} closed"
-    return text
 
 
 class StatusPanel(QWidget):
-    """Phase and message, the squirrel, trial and time, commanded and measured state."""
+    """Phase and message, the squirrel, trial and time, the commanded valves, the steps."""
 
     def __init__(
         self, rig: RigMap, parent: QWidget | None = None, *, reduced_motion: bool | None = None
@@ -240,36 +324,34 @@ class StatusPanel(QWidget):
         self._rig = rig
         self._recipe: Recipe | None = None
         self.squirrel = SniffWidget(reduced=reduced_motion)
+        self.squirrel.setFixedHeight(SQUIRREL_PX)
         self._phase = QLabel("idle")
         self._phase.setFont(theme.font(theme.TITLE_PX, bold=True))
+        self._phase.setFixedHeight(QFontMetrics(self._phase.font()).lineSpacing() + theme.UNIT)
         self._message = QLabel("")
         self._message.setWordWrap(True)
-        self._trial = QLabel("—")
-        self._trial.setWordWrap(True)
-        self._time = QLabel("—")
-        time_font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
-        time_font.setPixelSize(theme.BODY_PX)
-        self._time.setFont(time_font)
-        # The run directory name only; the status bar names the runs folder.
-        self._directory = QLabel("—")
-        self._directory.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self._directory.setAccessibleName("Run directory")
-        self._valves = QLabel("—")
-        self._valves.setWordWrap(True)
-        self._setpoints = QLabel("—")
-        self._setpoints.setWordWrap(True)
-        self._readback = QLabel("—")  # one line per MFC, so its height is known
-        self._latest: dict[str, Sample] = {}
+        self._message.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self._message.setFixedHeight(2 * QFontMetrics(self._message.font()).lineSpacing() + 4)
+        self._trial = _one_line(QLabel("—"))
+        self._time = _one_line(QLabel("—"))
+        self._time.setFont(_fixed_font())
+        self._directory = _one_line(QLabel("—"))
+        self._valves = _one_line(QLabel("—"))
 
         self._steps = QTableWidget(0, 3)
         self._steps.setHorizontalHeaderLabels(["Step", "Duration (s)", "State"])
-        self._steps.horizontalHeader().setStretchLastSection(True)
+        header = self._steps.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.Fixed)
+        header.setStretchLastSection(True)
+        header.resizeSection(0, 7 * theme.UNIT)
+        header.resizeSection(1, 14 * theme.UNIT)
         self._steps.verticalHeader().setVisible(False)
+        self._steps.verticalHeader().setDefaultSectionSize(theme.ROW_PX)
         self._steps.setSelectionMode(QAbstractItemView.NoSelection)
         self._steps.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._steps.setFocusPolicy(Qt.NoFocus)
-        self._steps.setMinimumHeight(3 * theme.ROW_PX)
-        self._steps.setMaximumHeight(6 * theme.ROW_PX)
+        self._steps.setFixedHeight(header.sizeHint().height() + STEP_ROWS * theme.ROW_PX + 2)
         self._steps_trial: str | None = None
 
         headline = QVBoxLayout()
@@ -286,34 +368,29 @@ class StatusPanel(QWidget):
         form = QFormLayout()
         form.setHorizontalSpacing(theme.SECTION_GAP)
         form.setVerticalSpacing(theme.GAP // 2)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         form.addRow("Trial", self._trial)
         form.addRow("Time", self._time)
         form.addRow("Directory", self._directory)
-        commanded = QLabel("Commanded")
-        commanded.setFont(theme.font(bold=True))
-        form.addRow(commanded)
         form.addRow("Valves", self._valves)
-        form.addRow("Setpoints", self._setpoints)
-        measured = QLabel("Measured")
-        measured.setFont(theme.font(bold=True))
-        form.addRow(measured, self._readback)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(theme.GAP)
         layout.addLayout(top)
         layout.addLayout(form)
         layout.addWidget(self._steps)
+        layout.addStretch(1)
 
     def set_recipe(self, recipe: Recipe | None) -> None:
         self._recipe = recipe
         self._steps_trial = None
         self._steps.setRowCount(0)
-        self._latest = {}
         self.squirrel.clear()
 
     def show_status(self, status: Status, elapsed: float) -> None:
         self._phase.setText(status.phase.value)
         self._message.setText(status.message)
+        self._message.setToolTip(status.message)
         self.squirrel.set_phase(status.phase)
         if status.run_directory is not None:
             self._directory.setText(status.run_directory.name)
@@ -323,14 +400,12 @@ class StatusPanel(QWidget):
             self._trial.setText("—")
         else:
             self._trial.setText(f"{status.trial_index + 1} of {total}: {status.trial_name}")
+        self._trial.setToolTip(self._trial.text())
         self._valves.setText(_valves_text(status.valves))
-        self._setpoints.setText(
+        self._valves.setToolTip(
             ", ".join(
-                f"{name} {value:g} {self._rig.mfcs[name].flow_unit}"
-                for name, value in status.setpoints.items()
-                if name in self._rig.mfcs
+                f"{name} {'open' if state else 'closed'}" for name, state in status.valves.items()
             )
-            or "—"
         )
         self._show_steps(status)
         self.show_time(status, elapsed)
@@ -338,9 +413,10 @@ class StatusPanel(QWidget):
     def show_time(self, status: Status, elapsed: float) -> None:
         if status.phase in {Phase.RUNNING, Phase.FINISHING} or status.phase.is_final:
             remaining = max(0.0, status.planned_seconds - elapsed)
+            width = len(f"{status.planned_seconds:.1f}")
             self._time.setText(
-                f"elapsed {elapsed:7.1f} s, remaining {remaining:7.1f} s "
-                f"of {status.planned_seconds:.1f} s"
+                f"{elapsed:{width}.1f} s of {status.planned_seconds:.1f} s, "
+                f"{remaining:{width}.1f} s left"
             )
         else:
             self._time.setText("—")
@@ -354,6 +430,7 @@ class StatusPanel(QWidget):
                             if row == status.step_index
                             else QColor(theme.PANEL)
                         )
+            self._steps.scrollToItem(self._steps.item(status.step_index, 0))
 
     def _show_steps(self, status: Status) -> None:
         name = status.trial_name
@@ -368,21 +445,15 @@ class StatusPanel(QWidget):
                     [f"{valve} open" for valve, open_ in step.valves.items() if open_]
                     + [f"{mfc} {value:g}" for mfc, value in step.setpoints.items()]
                 )
-                self._steps.setItem(row, 0, QTableWidgetItem(str(row + 1)))
-                self._steps.setItem(row, 1, QTableWidgetItem(f"{step.duration_seconds:g}"))
+                number = QTableWidgetItem(str(row + 1))
+                number.setTextAlignment(Qt.AlignCenter)
+                duration = QTableWidgetItem(f"{step.duration_seconds:g}")
+                duration.setTextAlignment(Qt.AlignCenter)
                 item = QTableWidgetItem(state or "all valves closed")
                 item.setToolTip(item.text())
+                self._steps.setItem(row, 0, number)
+                self._steps.setItem(row, 1, duration)
                 self._steps.setItem(row, 2, item)
-
-    def show_sample(self, sample: Sample) -> None:
-        self._latest[sample.mfc] = sample
-        parts = []
-        for name, latest in self._latest.items():
-            unit = self._rig.mfcs[name].flow_unit if name in self._rig.mfcs else ""
-            actual = "?" if latest.mass_flow is None else f"{latest.mass_flow:.2f}"
-            device = "?" if latest.device_setpoint is None else f"{latest.device_setpoint:.2f}"
-            parts.append(f"{name} flow {actual} {unit} (device setpoint {device})")
-        self._readback.setText("\n".join(parts) or "—")
 
 
 class RunView(QWidget):
@@ -392,6 +463,7 @@ class RunView(QWidget):
         self, rig: RigMap, parent: QWidget | None = None, *, reduced_motion: bool | None = None
     ) -> None:
         super().__init__(parent)
+        self._rig = rig
         self.status_panel = StatusPanel(rig, reduced_motion=reduced_motion)
         self.timeline = TimelineWidget()
         self.plot = MfcPlot(rig)
@@ -405,25 +477,45 @@ class RunView(QWidget):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.viewport().setAutoFillBackground(False)
         self.status_panel.setAutoFillBackground(False)
-        top = QHBoxLayout()
-        top.setSpacing(theme.SECTION_GAP)
-        top.addWidget(scroll, stretch=1)
-        top.addWidget(self.plot, stretch=1)
+        # A splitter shares the width. Content never moves the boundary; the operator can.
+        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setHandleWidth(theme.SECTION_GAP)
+        self.splitter.addWidget(scroll)
+        self.splitter.addWidget(self.plot)
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 1)
+        # Equal weights larger than any window: Qt scales them down in proportion,
+        # so the first layout is an even split and later resizes keep the ratio.
+        self.splitter.setSizes([10_000, 10_000])
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(theme.SECTION_GAP)
-        layout.addLayout(top, stretch=1)
+        layout.addWidget(self.splitter, stretch=1)
         layout.addWidget(self.timeline)
+
+    def preview(self, recipe: Recipe) -> None:
+        """Lay out the lanes for the valves this recipe opens, before any run."""
+        opened = {
+            valve
+            for trial in recipe.trials
+            for step in trial.steps
+            for valve, is_open in step.valves.items()
+            if is_open
+        }
+        self.timeline.set_valves(name for name in self._rig.valves if name in opened)
 
     def prepare(self, recipe: Recipe) -> None:
         self.status_panel.set_recipe(recipe)
         self.timeline.clear()
+        self.preview(recipe)
         self.plot.clear()
         self.cue_latencies = []
 
     def show_status(self, status: Status, elapsed: float, recipe: Recipe | None) -> None:
         if recipe is not None and status.order and status.phase == Phase.STARTING:
             self.timeline.set_plan(recipe, status.order)
+            self.plot.set_ranges(recipe, status.planned_seconds)
         self.status_panel.show_status(status, elapsed)
         self.timeline.set_progress(elapsed, status.trial_index)
 

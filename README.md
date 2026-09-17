@@ -300,11 +300,13 @@ This command changes no output.
 
 ### Watch the run
 
-The *Run* tab shows the phase, the current trial and step, the commanded state,
-the measured flow, the whole run as one timeline, and the MFC plot. The
-timeline has one lane for each valve that opens during the run, filled where
-the recipe plans it open; valves that stay closed for the whole run are named
-under the bar. The window
+The *Run* tab shows the phase, the current trial and step, the commanded
+valves, the whole run as one timeline, and the MFC plot with one readout row
+for each MFC: commanded, measured, deviation, and the verdict in words. The
+timeline has one lane for each valve the recipe opens, filled where the recipe
+plans it open. Nothing on this tab moves while a run changes the content: the
+labels have fixed heights, the plot axes are fixed at run start, and a splitter
+shares the width between the status and the plot. The window
 uses one light palette on every platform. Pink marks live attention only: the
 sniff, the current step, the progress cursor, and a high flow deviation.
 

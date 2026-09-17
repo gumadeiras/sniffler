@@ -1,5 +1,7 @@
 """The whole run as one picture: a trial bar, one lane per valve, and a pink cursor."""
 
+from collections.abc import Iterable
+
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPen
 from PySide6.QtWidgets import QWidget
@@ -15,27 +17,42 @@ LABEL_MAX_PX = 160
 
 
 class TimelineWidget(QWidget):
-    """Trials shaded by type with step ticks; below, when each valve is planned open."""
+    """Trials shaded by type with step ticks; below, one lane per valve the recipe opens.
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    The lanes follow the recipe, not the run: they exist, empty, as soon as the recipe
+    names the valves it opens, so the widget has the same height before, during, and
+    after a run. Only a recipe edit changes it.
+    """
+
+    def __init__(self, valves: Iterable[str] = (), parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._valves = list(valves)
         self._segments: list[tuple[float, float, str, list[float]]] = []
         self._colors: dict[str, QColor] = {}
-        self._lanes: dict[str, list[tuple[float, float]]] = {}
-        self.closed_all_run: list[str] = []
+        self._lanes: dict[str, list[tuple[float, float]]] = {name: [] for name in self._valves}
         self._total = 0.0
         self._cursor = 0.0
         self._current: int | None = None
         self._fit()
 
+    def set_valves(self, valves: Iterable[str]) -> None:
+        """Choose the lanes. Existing intervals are kept for valves that stay."""
+        names = list(valves)
+        if names == self._valves:
+            return
+        self._valves = names
+        self._lanes = {name: self._lanes.get(name, []) for name in names}
+        self._fit()
+        self.update()
+
     def lanes(self) -> dict[str, list[tuple[float, float]]]:
-        """Planned open intervals in run seconds, for every valve that opens at least once."""
+        """Planned open intervals in run seconds for every rig valve; empty when never open."""
         return {name: list(intervals) for name, intervals in self._lanes.items()}
 
     def set_plan(self, recipe: Recipe, order: tuple[str, ...]) -> None:
         self._segments = []
         self._colors = {}
-        intervals: dict[str, list[tuple[float, float]]] = {}
+        intervals: dict[str, list[tuple[float, float]]] = {name: [] for name in self._valves}
         start = 0.0
         for name in order:
             trial = recipe.trial(name)
@@ -44,8 +61,8 @@ class TimelineWidget(QWidget):
             for step in trial.steps:
                 duration = step.duration_seconds or 0.0
                 for valve, is_open in step.valves.items():
-                    lane = intervals.setdefault(valve, [])
-                    if not is_open:
+                    lane = intervals.get(valve)
+                    if lane is None or not is_open:
                         continue
                     if lane and lane[-1][1] == offset:
                         lane[-1] = (lane[-1][0], offset + duration)
@@ -58,8 +75,7 @@ class TimelineWidget(QWidget):
             if name not in self._colors:
                 self._colors[name] = QColor(theme.TRIAL_RAMP[len(self._colors) % 6])
             start += trial.duration_seconds
-        self._lanes = {name: lane for name, lane in intervals.items() if lane}
-        self.closed_all_run = [name for name, lane in intervals.items() if not lane]
+        self._lanes = intervals
         self._total = start
         self._cursor = 0.0
         self._current = None
@@ -73,8 +89,7 @@ class TimelineWidget(QWidget):
 
     def clear(self) -> None:
         self._segments = []
-        self._lanes = {}
-        self.closed_all_run = []
+        self._lanes = {name: [] for name in self._valves}
         self._total = 0.0
         self._cursor = 0.0
         self._current = None
@@ -96,7 +111,7 @@ class TimelineWidget(QWidget):
         metrics = painter.fontMetrics()
         label_width = 0
         if self._lanes:
-            widest = max(metrics.horizontalAdvance(name) for name in self._lanes)
+            widest = max(metrics.horizontalAdvance(name) for name in self._lanes) + 4
             label_width = min(LABEL_MAX_PX, widest) + theme.GAP
         bar = QRectF(
             self.rect().left() + 1 + label_width, TOP_PAD, self.width() - 2 - label_width, BAR_PX
@@ -104,13 +119,16 @@ class TimelineWidget(QWidget):
         painter.setPen(QPen(QColor(theme.LINE)))
         painter.setBrush(QColor(theme.PANEL))
         painter.drawRect(bar)
-        if self._total <= 0 or not self._segments:
+        planned = self._total > 0 and bool(self._segments)
+        scale = bar.width() / self._total if planned else 0.0
+        if planned:
+            self._paint_trials(painter, bar, scale)
+        else:
             painter.setPen(QColor(theme.INK_SOFT))
             painter.drawText(bar, Qt.AlignCenter, "No run planned.")
-            return
-        scale = bar.width() / self._total
-        self._paint_trials(painter, bar, scale)
         bottom = self._paint_lanes(painter, bar, scale, label_width, metrics)
+        if not planned:
+            return
         cursor_x = bar.left() + self._cursor * scale
         painter.setPen(QPen(QColor(theme.PINK), 2))
         painter.drawLine(int(cursor_x), int(bar.top()) - 6, int(cursor_x), bottom + 2)
@@ -169,8 +187,6 @@ class TimelineWidget(QWidget):
             painter.drawText(x + square + 4, baseline, name)
             x += square + 4 + metrics.horizontalAdvance(name) + theme.SECTION_GAP
         painter.setPen(QPen(QColor(theme.INK_SOFT)))
-        if self.closed_all_run:
-            painter.drawText(x, baseline, "closed all run: " + ", ".join(self.closed_all_run))
         painter.drawText(
             self.rect().adjusted(2, 0, -2, -2),
             Qt.AlignBottom | Qt.AlignRight,
