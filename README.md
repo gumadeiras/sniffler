@@ -1,9 +1,14 @@
 # Sniffler
 
-This project provides a small command-line tool for:
+This project controls an odor presentation rig:
 
-- a LabJack U3;
+- a LabJack U3 that drives valves through a PS12DC switching board;
 - one or more Alicat mass flow controllers (MFCs).
+
+It has two programs. `sniffler-gui` builds, runs, watches, and records
+experiments. `sniffler` is a command-line tool for diagnostics: status, one
+valve toggle, one setpoint, and the serial port list. The command line never
+runs an experiment.
 
 The Python layer supports macOS, Linux, and Windows. The current physical
 devices have been tested on macOS.
@@ -226,6 +231,88 @@ optional and can set a stricter experiment limit. `stop` does not depend on the
 full-scale query, but it still requires a valid Alicat connection and a
 mass-flow control point.
 
+## Run an experiment
+
+Start the window:
+
+```text
+uv run sniffler-gui
+```
+
+Use `--config another-lab.toml` to select another configuration file.
+
+### Recipes
+
+A recipe has three levels and one primitive:
+
+- **Step**: a duration plus the complete rig state. Each step sets every
+  valve to open or closed and gives every MFC a setpoint. At any moment one
+  step describes the rig.
+- **Trial**: a named, ordered list of steps.
+- **Schedule**: a count for each trial and the ordering policy.
+- **Shutdown state**: one step with no duration. The executor applies it after
+  the last trial or after *Stop after this trial*.
+
+Build the recipe in the *Recipe* tab. Steps are rows in a table. Each cell
+checks its value at once: a duration must be greater than zero, and a setpoint
+must respect `minimum_flow`, `maximum_flow`, and `allow_negative_flow` from
+`lab.toml` and the device full scale. A cell with a problem is red and shows
+the reason in its tooltip. The run cannot start while a problem exists.
+
+*Generate pulse train…* creates a train of pulses on one valve. The result is
+ordinary step rows, one for each pulse and one for each gap, and you can edit
+each row.
+
+Recipes are saved as `.json` files from the File menu. The file is a record,
+not an input format: build and edit recipes in the window.
+
+The ordering `block-randomized` shuffles trials inside blocks that hold one
+trial of each type, so a run that stops early is still balanced. No more than
+two identical trials follow each other anywhere in the run. The seed that
+produced the order is stored in the run manifest. Set the seed in the recipe
+to repeat the same order, or leave it empty for a new seed for each run.
+
+*Read device limits* in the *Rig map* tab reads the full scale of each MFC.
+This command changes no output.
+
+### Stop and abort
+
+- *Stop after this trial* finishes the current trial and then applies the
+  recipe shutdown state.
+- *Abort now* stops at once and forces the safe state: all valves closed,
+  every MFC setpoint zero. The recipe shutdown state is ignored.
+
+The safe state is also applied when a device command fails and when the
+window closes during a run. It is not configurable.
+
+### Run directories
+
+Each run writes one directory under `runs`, named by the start time and the
+recipe name:
+
+- `manifest.json`: copies of the recipe and rig map, the seed, the resolved
+  trial order, the start time, the software version, the operator notes, and
+  the outcome.
+- `events.csv`: every valve and MFC command, trial boundaries, stop and abort
+  requests, errors, and the shutdown or safe state. The time columns are
+  seconds since the run started. `returned_run_seconds` is when the command
+  returned from the device. `commanded_run_seconds` is when it was sent.
+  `scheduled_run_seconds` is the planned time.
+- `samples.csv`: each MFC reading next to the setpoint that was commanded.
+
+Every row is written when it happens, so a crashed run keeps its record.
+
+While a run is active, `runs/active-run.lock` names the run directory. The
+command line refuses hardware commands while the lock exists. If the program
+ended abnormally, the window offers to remove the lock at the next start.
+
+### Timing
+
+Valve steps are scheduled from the run start, so step times do not drift. All
+valves change in one LabJack transaction. MFC commands and readings run on a
+separate thread, so a slow MFC read never delays a valve. A single MFC read
+costs about 30 ms on the tested hardware; readings are taken at 10 Hz.
+
 ## Temporary command overrides
 
 You can override device identity without changing `lab.toml`:
@@ -244,6 +331,14 @@ uv run sniffler --config another-lab.toml alicat status
 ```
 
 ## Troubleshooting
+
+- `A run is active`: wait for the run to end, or remove `runs/active-run.lock`
+  if the run ended abnormally.
+- `Refusing to change the setpoint while its source is ...` or
+  `Cannot confirm the Alicat setpoint source`: the run is refused before any
+  setpoint is sent. Select source `U` on the controller.
+- `unknown valve` or `unknown MFC` in the recipe editor: the recipe names a
+  device that `lab.toml` does not list. Add it to `[valves]` or `[alicat.<name>]`.
 
 - `Set alicat.port in lab.toml`: add the detected serial port or use `--port`.
 - `Cannot open the Alicat MFC`: confirm the cable driver, port, baud rate, power,
@@ -269,6 +364,6 @@ uv build
 ```
 
 The automated tests use fake LabJack hardware and the Alicat package's mock
-serial client. They do not send commands to physical hardware. Cross-platform
-CI tests the Python layer, package build, command routing, and driver protocol
-logic.
+serial client. They do not send commands to physical hardware. The GUI tests
+run under the offscreen Qt platform. Cross-platform CI tests the Python layer,
+package build, command routing, and driver protocol logic.

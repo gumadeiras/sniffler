@@ -385,6 +385,17 @@ async def alicat_status(
         return await session.status()
 
 
+async def alicat_full_scale(
+    port: str,
+    unit: str = "A",
+    baud_rate: int = 19200,
+    timeout_seconds: float = 0.15,
+) -> tuple[float, str]:
+    """Read the Alicat mass-flow full scale and unit. This changes nothing."""
+    async with open_alicat(port, unit, baud_rate, timeout_seconds) as session:
+        return await _read_alicat_mass_flow_full_scale(session._controller)
+
+
 async def set_alicat_flow(
     port: str,
     flow_rate: float,

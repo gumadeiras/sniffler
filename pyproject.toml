@@ -4,17 +4,20 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sniffler"
-version = "0.2.0"
+version = "0.3.0"
 description = "Simple control for a LabJack U3 and Alicat mass flow controllers"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "alicat>=0.9,<1",
     "LabJackPython>=2.1,<3",
+    "PySide6>=6.8,<7",
+    "pyqtgraph>=0.13,<1",
 ]
 
 [project.scripts]
 sniffler = "sniffler.cli:main"
+sniffler-gui = "sniffler.gui.app:main"
 
 [dependency-groups]
 dev = ["ruff>=0.15,<1"]

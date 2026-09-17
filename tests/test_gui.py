@@ -1,0 +1,326 @@
+"""GUI tests under the offscreen Qt platform: authoring, validation, and window close."""
+
+import os
+import tempfile
+import time
+import unittest
+from pathlib import Path
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+try:
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication, QMessageBox
+except ImportError as error:  # pragma: no cover - depends on the platform libraries
+    QApplication = None  # type: ignore[assignment]
+    IMPORT_ERROR = str(error)
+else:
+    IMPORT_ERROR = ""
+
+from sniffler.config import AlicatSettings, Settings
+from sniffler.executor import Phase
+from sniffler.recipe import Recipe, Schedule, Step, Trial, rig_map_from_settings
+from sniffler.runlog import LOCK_FILE_NAME, RunLock
+from tests.fakes import FakeRig
+
+SETTINGS = Settings(
+    labjack_serial=320107153,
+    alicats={
+        "mfc-500": AlicatSettings(
+            port="/dev/mfc-500", maximum_flow=400.0, units={"mass_flow": "SCCM"}
+        ),
+        "mfc-2000": AlicatSettings(port="/dev/mfc-2000", units={"mass_flow": "SCCM"}),
+    },
+    valves={"odor-1": 8, "odor-2": 9, "final": 16},
+)
+RIG = rig_map_from_settings(SETTINGS)
+
+
+def step(duration: float, odor_1: bool = False, flow: float = 100.0) -> Step:
+    return Step(
+        duration,
+        {"odor-1": odor_1, "odor-2": False, "final": False},
+        {"mfc-500": flow, "mfc-2000": 1000.0},
+    )
+
+
+def make_recipe(step_seconds: float) -> Recipe:
+    return Recipe(
+        name="GUI pulses",
+        trials=(
+            Trial("odor", (step(step_seconds, True), step(step_seconds))),
+            Trial("blank", (step(step_seconds),)),
+        ),
+        schedule=Schedule({"odor": 2, "blank": 2}, "block-randomized", 11),
+        shutdown=Step(
+            None,
+            {"odor-1": False, "odor-2": False, "final": True},
+            {"mfc-500": 50.0, "mfc-2000": 0.0},
+        ),
+        notes="carrier stays on",
+    )
+
+
+@unittest.skipIf(QApplication is None, f"PySide6 is not usable here: {IMPORT_ERROR}")
+class GuiTestCase(unittest.TestCase):
+    application: "QApplication"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.application = QApplication.instance() or QApplication([])
+
+    def process_events(self, seconds: float = 0.0) -> None:
+        deadline = time.monotonic() + seconds
+        self.application.processEvents()
+        while time.monotonic() < deadline:
+            self.application.processEvents()
+            time.sleep(0.005)
+
+    def wait_until(self, condition, timeout: float = 10.0) -> None:
+        deadline = time.monotonic() + timeout
+        while not condition():
+            if time.monotonic() > deadline:
+                self.fail("condition not met in time")
+            self.application.processEvents()
+            time.sleep(0.005)
+
+
+class RecipeEditorTests(GuiTestCase):
+    def test_authors_a_complete_recipe_without_a_file(self) -> None:
+        from sniffler.gui.recipe_editor import RecipeEditor
+
+        editor = RecipeEditor(RIG)
+        editor._name.setText("GUI pulses")
+        editor._notes.setPlainText("carrier stays on")
+        editor.rename_trial(0, "odor")
+        model = editor._steps
+        # Step 1: 0.5 s, odor-1 open, mfc-500 at 100, mfc-2000 at 1000.
+        self.assertTrue(model.setData(model.index(0, 0), "0.5"))
+        self.assertTrue(model.setData(model.index(0, 1), Qt.Checked, Qt.CheckStateRole))
+        self.assertTrue(model.setData(model.index(0, 4), "100"))
+        self.assertTrue(model.setData(model.index(0, 5), "1000"))
+        editor._on_add_step()
+        self.assertEqual(model.rowCount(), 2)
+        self.assertTrue(model.setData(model.index(1, 1), Qt.Unchecked, Qt.CheckStateRole))
+        editor._on_add_trial()
+        editor.rename_trial(1, "blank")
+        model = editor._steps
+        self.assertTrue(model.setData(model.index(0, 0), "0.5"))
+        self.assertTrue(model.setData(model.index(0, 4), "100"))
+        self.assertTrue(model.setData(model.index(0, 5), "1000"))
+        editor._set_count(0, 2)
+        editor._set_count(1, 2)
+        editor._seed.setText("11")
+        shutdown = editor._shutdown
+        self.assertTrue(shutdown.setData(shutdown.index(0, 2), Qt.Checked, Qt.CheckStateRole))
+        self.assertTrue(shutdown.setData(shutdown.index(0, 3), "50"))
+
+        recipe = editor.recipe()
+
+        self.assertEqual(editor.problems(), [])
+        self.assertEqual(recipe, make_recipe(0.5))
+
+    def test_loads_and_round_trips_a_recipe(self) -> None:
+        from sniffler.gui.recipe_editor import RecipeEditor
+
+        editor = RecipeEditor(RIG)
+        editor.set_recipe(make_recipe(0.25))
+        editor._trial_list.setCurrentRow(1)
+        editor._trial_list.setCurrentRow(0)
+
+        self.assertEqual(editor.recipe(), make_recipe(0.25))
+        self.assertEqual(editor.problems(), [])
+
+    def test_marks_cells_that_break_lab_limits_and_blocks_the_run(self) -> None:
+        from sniffler.gui.recipe_editor import RecipeEditor
+        from sniffler.gui.step_table import PROBLEM_BRUSH
+
+        editor = RecipeEditor(RIG.with_full_scale("mfc-2000", 2000.0, "SCCM"))
+        editor._name.setText("limits")
+        model = editor._steps
+        self.assertFalse(model.setData(model.index(0, 4), "abc"), "letters are refused")
+        self.assertTrue(model.setData(model.index(0, 4), "400.01"))
+        self.assertTrue(model.setData(model.index(0, 5), "2500"))
+        self.assertTrue(model.setData(model.index(0, 0), "0"))
+
+        self.assertEqual(model.data(model.index(0, 4), Qt.BackgroundRole), PROBLEM_BRUSH)
+        self.assertIn("lab.toml limit of 400", model.data(model.index(0, 4), Qt.ToolTipRole))
+        self.assertIn("full scale of 2000", model.data(model.index(0, 5), Qt.ToolTipRole))
+        self.assertIn("greater than zero", model.data(model.index(0, 0), Qt.ToolTipRole))
+        self.assertIsNone(model.data(model.index(0, 1), Qt.BackgroundRole))
+        problems = editor.problems()
+        self.assertEqual(len(problems), 3)
+        self.assertTrue(all(problem.startswith("Trial 'trial 1', step 1") for problem in problems))
+
+    def test_refuses_a_recipe_that_names_an_unknown_device(self) -> None:
+        from sniffler.gui.recipe_editor import RecipeEditor
+
+        recipe = make_recipe(0.5)
+        ghost = Step(
+            0.5,
+            {**recipe.trials[0].steps[0].valves, "ghost": True},
+            recipe.trials[0].steps[0].setpoints,
+        )
+        recipe = Recipe(
+            recipe.name,
+            (Trial("odor", (ghost,)), recipe.trials[1]),
+            recipe.schedule,
+            recipe.shutdown,
+        )
+        editor = RecipeEditor(RIG)
+        editor.set_recipe(recipe)
+
+        problems = editor.problems()
+
+        self.assertEqual(
+            problems,
+            ["Trial 'odor', step 1: unknown valve 'ghost'. Add it to [valves] in lab.toml."],
+        )
+
+    def test_pulse_train_expands_into_explicit_step_rows(self) -> None:
+        from sniffler.gui.pulse_dialog import pulse_train
+        from sniffler.gui.recipe_editor import RecipeEditor
+        from sniffler.gui.step_table import StepRow
+
+        editor = RecipeEditor(RIG)
+        template = StepRow(
+            1.0,
+            {"odor-1": False, "odor-2": True, "final": False},
+            {"mfc-500": 100.0, "mfc-2000": 0.0},
+        )
+        rows = pulse_train(template, "odor-1", 0.1, 0.4, 3, end_with_gap=False)
+        editor.insert_steps(1, rows)
+
+        steps = editor._steps.steps()
+        self.assertEqual(len(steps), 6)
+        self.assertEqual([s.duration_seconds for s in steps[1:]], [0.1, 0.4, 0.1, 0.4, 0.1])
+        self.assertEqual([s.valves["odor-1"] for s in steps[1:]], [True, False, True, False, True])
+        self.assertTrue(
+            all(s.valves["odor-2"] for s in steps[1:]), "other valves copy the template"
+        )
+        self.assertTrue(all(s.setpoints["mfc-500"] == 100.0 for s in steps[1:]))
+        # Each generated row is an ordinary, editable step.
+        self.assertTrue(editor._steps.setData(editor._steps.index(2, 0), "0.25"))
+        self.assertEqual(editor._steps.steps()[2].duration_seconds, 0.25)
+
+
+class MainWindowTests(GuiTestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.runs = Path(self.temporary.name, "runs")
+        self.settings = Settings(
+            labjack_serial=SETTINGS.labjack_serial,
+            alicats=SETTINGS.alicats,
+            valves=SETTINGS.valves,
+            runs_directory=self.runs,
+        )
+        self.rig = FakeRig()
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def window(self, answer=QMessageBox.Yes):
+        from sniffler.gui.app import MainWindow
+
+        window = MainWindow(
+            self.settings, RIG, open_labjack=self.rig.open_labjack, open_alicat=self.rig.open_alicat
+        )
+        window._ask = lambda *_arguments, **_options: answer
+        window.warnings = []
+        window._tell = lambda _parent, title, text: window.warnings.append((title, text))
+        return window
+
+    def test_window_close_during_a_run_aborts_and_forces_the_safe_state(self) -> None:
+        window = self.window()
+        window.editor.set_recipe(make_recipe(1.0))
+        window.start_run()
+        self.wait_until(
+            lambda: (
+                window.controller.executor is not None
+                and window.controller.executor.status.phase == Phase.RUNNING
+            )
+        )
+        self.assertTrue(window.controller.is_running)
+        self.assertTrue(window.abort_button.isEnabled())
+
+        window.close()
+        self.process_events(0.1)
+
+        self.assertFalse(window.controller.is_running)
+        self.assertEqual(window.controller.executor.status.phase, Phase.ABORTED)
+        self.assertEqual(self.rig.labjack.writes[-1][1], {8: False, 9: False, 16: False})
+        self.assertEqual(self.rig.alicats["mfc-500"].setpoints[-1], 0.0)
+        self.assertNotIn(50.0, self.rig.alicats["mfc-500"].setpoints)
+        self.assertFalse((self.runs / LOCK_FILE_NAME).exists())
+
+    def test_window_close_is_refused_when_the_operator_declines(self) -> None:
+        window = self.window(answer=QMessageBox.No)
+        window.editor.set_recipe(make_recipe(1.0))
+        window.start_run()
+        self.wait_until(lambda: window.controller.is_running)
+
+        window.close()
+
+        self.assertTrue(window.isVisible() or window.controller.is_running)
+        self.assertTrue(window.controller.is_running)
+        window._ask = lambda *_arguments, **_options: QMessageBox.Yes
+        window.close()
+        self.assertFalse(window.controller.is_running)
+
+    def test_run_from_the_window_publishes_status_and_samples_to_the_view(self) -> None:
+        window = self.window()
+        window.editor.set_recipe(make_recipe(0.05))
+        window._notes.setPlainText("bench notes")
+        window.start_run()
+
+        self.wait_until(
+            lambda: not window.controller.is_running and not window.stop_button.isEnabled()
+        )
+        self.process_events(0.2)
+
+        status = window.controller.executor.status
+        self.assertEqual(status.phase, Phase.DONE, status.message)
+        self.assertEqual(window.run_view.status_panel._phase.text(), "done")
+        self.assertIn("4 of 4", window.run_view.status_panel._trial.text())
+        self.assertGreater(len(window.run_view.plot._history["mfc-500"]), 0)
+        self.assertIn("mfc-500", window.run_view.status_panel._readback.text())
+        self.assertTrue(window.start_button.isEnabled())
+        self.assertEqual(window.warnings, [])
+        manifest = (status.run_directory / "manifest.json").read_text()
+        self.assertIn("bench notes", manifest)
+
+    def test_start_is_refused_while_the_recipe_has_problems(self) -> None:
+        window = self.window()
+        window.editor._steps.setData(window.editor._steps.index(0, 4), "999")
+
+        window.start_run()
+
+        self.assertFalse(window.start_button.isEnabled())
+        self.assertEqual(len(window.warnings), 1)
+        self.assertIn("lab.toml limit of 400", window.warnings[0][1])
+        self.assertEqual(self.rig.labjack_opens, 0)
+
+    def test_stale_lock_is_reported_and_removed_on_request(self) -> None:
+        RunLock(self.runs, self.runs / "20260917-101500-old").acquire()
+        window = self.window()
+
+        window.check_stale_lock()
+
+        self.assertFalse((self.runs / LOCK_FILE_NAME).exists())
+        self.assertIn("Lock file removed", window.statusBar().currentMessage())
+
+    def test_device_limits_apply_to_the_editor_and_the_rig_panel(self) -> None:
+        window = self.window()
+
+        window.apply_device_limits(
+            {"mfc-500": (500.0, "SCCM"), "mfc-2000": "Cannot open the Alicat MFC"}
+        )
+
+        self.assertEqual(window.editor.rig.mfcs["mfc-500"].full_scale, 500.0)
+        self.assertIsNone(window.editor.rig.mfcs["mfc-2000"].full_scale)
+        self.assertEqual(len(window.warnings), 1)
+        self.assertIn("mfc-2000: Cannot open", window.warnings[0][1])
+
+
+if __name__ == "__main__":
+    unittest.main()
