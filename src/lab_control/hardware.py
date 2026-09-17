@@ -137,27 +137,42 @@ def read_labjack_analog(channel: int, serial_number: int | None = None) -> float
             raise DeviceError(f"Cannot read LabJack AIN{channel}: {error}") from error
 
 
+def digital_channel_name(channel: int) -> str:
+    """Return the U3 line name for a unified digital channel number."""
+    if channel < 8:
+        return f"FIO{channel}"
+    if channel < 16:
+        return f"EIO{channel - 8}"
+    return f"CIO{channel - 16}"
+
+
 def set_labjack_digital(channel: int, state: bool, serial_number: int | None = None) -> bool:
     """Set and read a U3 line that is configured as digital."""
+    name = digital_channel_name(channel)
     with _open_labjack(serial_number) as device:
         try:
-            analog_mask = int(device.configU3().get("FIOAnalog", 0))
+            configuration = device.configU3()
         except Exception as error:
             raise DeviceError(f"Cannot read the LabJack U3 configuration: {error}") from error
-        if analog_mask & (1 << channel):
-            raise DeviceError(f"FIO{channel} is configured as analog; no output was changed.")
+        is_analog = False
+        if channel < 8:
+            is_analog = bool(int(configuration.get("FIOAnalog", 0)) & (1 << channel))
+        elif channel < 16:
+            is_analog = bool(int(configuration.get("EIOAnalog", 0)) & (1 << (channel - 8)))
+        if is_analog:
+            raise DeviceError(f"{name} is configured as analog; no output was changed.")
 
         try:
             device.setDOState(channel, int(state))
         except Exception as error:
             raise DeviceError(
-                f"Cannot confirm the FIO{channel} write; the output might have changed: {error}"
+                f"Cannot confirm the {name} write; the output might have changed: {error}"
             ) from error
         try:
             return bool(device.getDIOState(channel))
         except Exception as error:
             raise DeviceError(
-                f"FIO{channel} was written, but its reported state cannot be read: {error}"
+                f"{name} was written, but its reported state cannot be read: {error}"
             ) from error
 
 

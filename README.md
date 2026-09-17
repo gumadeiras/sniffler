@@ -24,7 +24,7 @@ The tool applies these rules:
 - The tool never changes the Alicat control point.
 - The tool never changes the Alicat setpoint source.
 - The Alicat driver applies setpoints with a resolution of 0.01 device units.
-- A LabJack digital command is refused if the selected FIO line is analog.
+- A LabJack digital command is refused if the selected FIO or EIO line is analog.
 - A LabJack digital command changes the line direction to output.
 - The reported LabJack state is an internal state. It is not a voltage
   measurement at the connected equipment.
@@ -166,9 +166,14 @@ Set FIO4 high:
 uv run lab-control labjack set-digital --channel 4 --state high
 ```
 
-The first command supports AIN0 through AIN3. The second command supports FIO4
-through FIO7. Each command checks the current analog or digital configuration
+The first command supports AIN0 through AIN3. The second command supports
+channels 4 through 19: 4-7 is FIO4-FIO7, 8-15 is EIO0-EIO7, and 16-19 is
+CIO0-CIO3. Each command checks the current analog or digital configuration
 before it continues.
+
+The EIO and CIO lines are the control lines for a PS12DC power switching board.
+Switches S0 through S7 map to EIO0 through EIO7, which is channel 8 through 15.
+Switches S8 through S11 map to CIO0 through CIO3, which is channel 16 through 19.
 
 ## Control the Alicat
 
@@ -225,8 +230,9 @@ uv run lab-control --config another-lab.toml alicat status
   mode. No setpoint was sent.
 - `Set the source to U`: the Alicat uses an analog or saved setpoint source.
   Select source `U` on the controller before you use serial control.
-- `FIO... is configured as analog`: select a configured digital line or change
-  the LabJack configuration with the official LabJack software.
+- `FIO... is configured as analog` or `EIO... is configured as analog`: select a
+  configured digital line or change the LabJack configuration with the official
+  LabJack software.
 - `Cannot connect to the LabJack U3`: confirm the UD driver on Windows or the
   Exodriver on macOS and Linux.
 

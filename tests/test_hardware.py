@@ -12,6 +12,7 @@ from alicat.mock import Client as MockAlicatClient
 from lab_control.hardware import (
     DeviceError,
     alicat_status,
+    digital_channel_name,
     read_labjack_analog,
     set_alicat_flow,
     set_labjack_digital,
@@ -27,13 +28,14 @@ class FakeU3:
         self.closed = False
         self.digital_write: tuple[int, int] | None = None
         self.analog_mask = 0b00001111
+        self.eio_analog_mask = 0b00000001
         self.instances.append(self)
 
     def getCalibrationData(self) -> None:
         self.calibrated = True
 
     def configU3(self) -> dict[str, int]:
-        return {"FIOAnalog": self.analog_mask}
+        return {"FIOAnalog": self.analog_mask, "EIOAnalog": self.eio_analog_mask}
 
     def getAIN(self, channel: int) -> float:
         return 1.25 + channel
@@ -77,6 +79,28 @@ class LabJackTests(unittest.TestCase):
             self.assertRaisesRegex(DeviceError, "configured as analog"),
         ):
             set_labjack_digital(0, True)
+
+    def test_sets_switching_board_lines_and_checks_the_eio_analog_mask(self) -> None:
+        with patch.dict(sys.modules, {"u3": self.u3_module}):
+            eio_state = set_labjack_digital(9, True)
+            cio_state = set_labjack_digital(16, True)
+
+        self.assertTrue(eio_state)
+        self.assertEqual(FakeU3.instances[0].digital_write, (9, 1))
+        self.assertTrue(cio_state)
+        self.assertEqual(FakeU3.instances[1].digital_write, (16, 1))
+
+        with (
+            patch.dict(sys.modules, {"u3": self.u3_module}),
+            self.assertRaisesRegex(DeviceError, "EIO0 is configured as analog"),
+        ):
+            set_labjack_digital(8, True)
+
+    def test_names_each_digital_channel_group(self) -> None:
+        self.assertEqual(digital_channel_name(4), "FIO4")
+        self.assertEqual(digital_channel_name(8), "EIO0")
+        self.assertEqual(digital_channel_name(15), "EIO7")
+        self.assertEqual(digital_channel_name(19), "CIO3")
 
 
 class MassFlowClient(MockAlicatClient):

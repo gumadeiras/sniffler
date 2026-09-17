@@ -166,7 +166,8 @@ def _labjack_set_digital(arguments: argparse.Namespace, settings: Settings) -> N
     actual = hardware.set_labjack_digital(
         arguments.channel, expected, _labjack_serial(arguments, settings)
     )
-    print(f"FIO{arguments.channel} reported state: {'high' if actual else 'low'}")
+    name = hardware.digital_channel_name(arguments.channel)
+    print(f"{name} reported state: {'high' if actual else 'low'}")
 
 
 def _alicat_status(arguments: argparse.Namespace, settings: Settings) -> None:
@@ -241,10 +242,14 @@ def _build_parser() -> argparse.ArgumentParser:
     read_analog.set_defaults(handler=_labjack_read_analog)
 
     set_digital = labjack_commands.add_parser(
-        "set-digital", help="Set default digital output FIO4 through FIO7."
+        "set-digital", help="Set a digital output on FIO4 through FIO7, EIO0 through CIO3."
     )
     set_digital.add_argument(
-        "--channel", type=int, choices=range(4, 8), default=4, help="Digital FIO channel."
+        "--channel",
+        type=int,
+        choices=range(4, 20),
+        default=4,
+        help="Digital channel: 4-7 is FIO4-FIO7, 8-15 is EIO0-EIO7, 16-19 is CIO0-CIO3.",
     )
     set_digital.add_argument(
         "--state", required=True, choices=("high", "low"), help="Requested output state."
