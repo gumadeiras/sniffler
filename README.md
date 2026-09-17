@@ -292,7 +292,7 @@ discards them. The last saved recipe opens again at the next start.
 The ordering `block-randomized` shuffles trials inside blocks that hold one
 trial of each type, so a run that stops early is still balanced. No more than
 two identical trials follow each other anywhere in the run. The seed that
-produced the order is stored in the run manifest. Set the seed in the recipe
+produced the order is saved with the run in `manifest.json`. Set the seed in the recipe
 to repeat the same order, or leave it empty for a new seed for each run.
 
 *Read device limits* in the *Config* tab reads the full scale of each MFC.

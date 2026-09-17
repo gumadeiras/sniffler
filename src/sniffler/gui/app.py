@@ -147,7 +147,7 @@ class MainWindow(QMainWindow):
         self._recipe_summary.setWordWrap(True)
         self._seed_label = QLabel("—")
         self._notes = QPlainTextEdit()
-        self._notes.setPlaceholderText("Stored in the run manifest")
+        self._notes.setPlaceholderText("Saved with the run")
         self._notes.setMaximumHeight(2 * theme.ROW_PX)
         self._notes.setAccessibleName("Run notes")
         self.start_button = QPushButton(icon("start", theme.PANEL), "Start run")
@@ -427,7 +427,7 @@ class MainWindow(QMainWindow):
             self.run_view.preview(recipe)
         seed = recipe.schedule.seed
         self._seed_label.setText(
-            "random, saved in the manifest" if seed is None else f"{seed} (from the recipe)"
+            "random, saved with the run" if seed is None else f"{seed} (from the recipe)"
         )
         if not self.controller.is_running:
             self.start_button.setEnabled(not problems)
