@@ -78,6 +78,27 @@ class Sample:
 
 
 @dataclass(frozen=True)
+class Event:
+    """One events.csv row, as the step-timing thread recorded it.
+
+    Delivered to ``on_event`` after the row is written. The MFC worker writes its
+    ``mfc_command`` and ``error`` rows itself and does not deliver them here.
+    """
+
+    event: str
+    returned_run_seconds: float
+    returned_wall_time: str
+    scheduled_run_seconds: float | None = None
+    commanded_run_seconds: float | None = None
+    trial_index: int | None = None
+    trial_name: str = ""
+    step_index: int | None = None
+    device: str = ""
+    value: object = ""
+    detail: str = ""
+
+
+@dataclass(frozen=True)
 class Status:
     """A snapshot of the run that is safe to read from any thread."""
 
@@ -315,6 +336,7 @@ class Executor:
         open_alicat: Callable[..., Any] = hardware.open_alicat,
         on_status: Callable[[Status], None] | None = None,
         on_sample: Callable[[Sample], None] | None = None,
+        on_event: Callable[[Event], None] | None = None,
         sample_interval_seconds: float = DEFAULT_SAMPLE_INTERVAL_SECONDS,
         clock: Callable[[], float] = time.perf_counter,
     ) -> None:
@@ -327,6 +349,7 @@ class Executor:
         self._open_alicat = open_alicat
         self._on_status = on_status
         self._on_sample = on_sample
+        self._on_event = on_event
         self._sample_interval = sample_interval_seconds
         self._clock = clock
         self._lock = threading.Lock()
@@ -600,12 +623,19 @@ class Executor:
         return problems
 
     def _record(self, event: str, **fields: Any) -> None:
+        """Write one event row, then hand the same fields to ``on_event``.
+
+        The callback must not block: the GUI side only puts into a queue.
+        """
         log = self._log
         if log is None:
             return
         fields.setdefault("returned_run_seconds", self.elapsed_seconds())
+        fields.setdefault("returned_wall_time", wall_time_now())
         with suppress(RunLogError):
             log.event(event, **fields)
+        if self._on_event is not None:
+            self._on_event(Event(event, **fields))
 
     def _publish(self, **changes: Any) -> None:
         with self._lock:

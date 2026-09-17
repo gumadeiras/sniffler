@@ -8,7 +8,7 @@ import time
 import unittest
 from pathlib import Path
 
-from sniffler.executor import Executor, Phase, Sample, Status
+from sniffler.executor import Event, Executor, Phase, Sample, Status
 from sniffler.recipe import MfcMap, Recipe, RigMap, Schedule, Step, Trial
 from sniffler.runlog import LOCK_FILE_NAME, RunLock
 from tests.fakes import FakeRig
@@ -287,6 +287,43 @@ class ExitPathTests(ExecutorTestCase):
         self.assertIn("20260101-000000-other", status.message)
         self.assertEqual(self.rig.labjack_opens, 0)
         self.assertTrue((self.runs / LOCK_FILE_NAME).exists(), "the other lock is kept")
+
+
+class EventCallbackTests(ExecutorTestCase):
+    def test_on_event_receives_every_valve_command_in_log_order(self) -> None:
+        received: list[Event] = []
+        threads: set[str] = set()
+
+        def on_event(event: Event) -> None:
+            received.append(event)
+            threads.add(threading.current_thread().name)
+
+        status = self.executor(on_event=on_event).run()
+
+        self.assertEqual(status.phase, Phase.DONE, status.message)
+        logged = [row for row in self.events(status) if row["event"] == "valve_command"]
+        seen = [event for event in received if event.event == "valve_command"]
+        self.assertGreaterEqual(len(logged), 8)
+        self.assertEqual(
+            [(event.device, event.value) for event in seen],
+            [(row["device"], row["value"]) for row in logged],
+            "the callback sees each valve command once, in the order the log has",
+        )
+        for event, row in zip(seen, logged, strict=True):
+            self.assertEqual(f"{event.returned_run_seconds:.6f}", row["returned_run_seconds"])
+            self.assertEqual(f"{event.commanded_run_seconds:.6f}", row["commanded_run_seconds"])
+            self.assertEqual(event.returned_wall_time, row["returned_wall_time"])
+            self.assertEqual(
+                "" if event.trial_index is None else str(event.trial_index), row["trial_index"]
+            )
+            self.assertEqual(
+                "" if event.step_index is None else str(event.step_index), row["step_index"]
+            )
+            self.assertEqual(event.trial_name, row["trial_name"])
+            self.assertEqual(event.detail, row["detail"])
+        self.assertEqual(threads, {"MainThread"}, "events come from the step-timing thread")
+        self.assertIn("run_start", [event.event for event in received])
+        self.assertEqual(received[-1].event, "run_end")
 
 
 class TimingTests(ExecutorTestCase):
