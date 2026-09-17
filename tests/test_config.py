@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from lab_control.config import ConfigError, load_settings
+from sniffler.config import ConfigError, load_settings
 
 
 class ConfigurationTests(unittest.TestCase):

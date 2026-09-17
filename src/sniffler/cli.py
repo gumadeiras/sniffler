@@ -9,8 +9,8 @@ import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from lab_control import hardware
-from lab_control.config import AlicatSettings, ConfigError, Settings, load_settings
+from sniffler import hardware
+from sniffler.config import AlicatSettings, ConfigError, Settings, load_settings
 
 
 def _run_with_homebrew_exodriver(argv: Sequence[str] | None) -> int | None:
@@ -35,7 +35,7 @@ def _run_with_homebrew_exodriver(argv: Sequence[str] | None) -> int | None:
     environment["DYLD_LIBRARY_PATH"] = os.pathsep.join(
         [str(driver_directory), *filter(None, current_path)]
     )
-    command = [sys.executable, "-m", "lab_control.cli", *sys.argv[1:]]
+    command = [sys.executable, "-m", "sniffler.cli", *sys.argv[1:]]
     return subprocess.run(command, env=environment, check=False).returncode
 
 
@@ -213,7 +213,7 @@ def _alicat_stop(arguments: argparse.Namespace, settings: Settings) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="lab-control",
+        prog="sniffler",
         description="Control a LabJack U3 and Alicat mass flow controllers.",
     )
     parser.add_argument(

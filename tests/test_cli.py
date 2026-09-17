@@ -8,9 +8,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from lab_control.cli import _finite_float, _run_with_homebrew_exodriver, main
-from lab_control.config import AlicatSettings, Settings
-from lab_control.hardware import DeviceError
+from sniffler.cli import _finite_float, _run_with_homebrew_exodriver, main
+from sniffler.config import AlicatSettings, Settings
+from sniffler.hardware import DeviceError
 
 
 class CommandLineTests(unittest.TestCase):
@@ -24,14 +24,14 @@ class CommandLineTests(unittest.TestCase):
         output = io.StringIO()
         errors = io.StringIO()
         with (
-            patch("lab_control.cli.load_settings", return_value=settings or Settings()),
+            patch("sniffler.cli.load_settings", return_value=settings or Settings()),
             contextlib.redirect_stdout(output),
             contextlib.redirect_stderr(errors),
         ):
             status = main(arguments)
         return status, output.getvalue(), errors.getvalue()
 
-    @patch("lab_control.cli.hardware.list_serial_ports")
+    @patch("sniffler.cli.hardware.list_serial_ports")
     def test_lists_serial_ports(self, list_serial_ports) -> None:
         list_serial_ports.return_value = [("/dev/cu.usbserial-1", "USB serial adapter")]
 
@@ -40,7 +40,7 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual((status, errors), (0, ""))
         self.assertEqual(output, "/dev/cu.usbserial-1: USB serial adapter\n")
 
-    @patch("lab_control.cli.hardware.set_labjack_digital")
+    @patch("sniffler.cli.hardware.set_labjack_digital")
     def test_routes_configured_labjack_serial(self, set_digital) -> None:
         set_digital.return_value = True
         settings = Settings(labjack_serial=320123456)
@@ -54,7 +54,7 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(output, "FIO4 reported state: high\n")
         set_digital.assert_called_once_with(4, True, 320123456)
 
-    @patch("lab_control.cli.hardware.set_alicat_flow", new_callable=AsyncMock)
+    @patch("sniffler.cli.hardware.set_alicat_flow", new_callable=AsyncMock)
     def test_routes_alicat_stop_connection(self, set_flow) -> None:
         set_flow.return_value = (0.0, None)
         settings = self.settings_with_alicat(port="COM3", unit="B", baud_rate=9600)
@@ -65,7 +65,7 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(output, "Alicat mass-flow setpoint changed to zero.\n")
         set_flow.assert_awaited_once_with("COM3", 0.0, "B", 9600, 0.15)
 
-    @patch("lab_control.cli.hardware.set_alicat_flow", new_callable=AsyncMock)
+    @patch("sniffler.cli.hardware.set_alicat_flow", new_callable=AsyncMock)
     def test_uses_the_device_unit_without_a_configured_maximum(self, set_flow) -> None:
         set_flow.return_value = (1.23, "SCCM")
         settings = self.settings_with_alicat("mfc-500", port="COM3")
@@ -78,7 +78,7 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(output, "Alicat mfc-500 mass-flow setpoint changed to 1.23 SCCM.\n")
         set_flow.assert_awaited_once_with("COM3", 1.23, "A", 19200, 0.15)
 
-    @patch("lab_control.cli.hardware.set_alicat_flow", new_callable=AsyncMock)
+    @patch("sniffler.cli.hardware.set_alicat_flow", new_callable=AsyncMock)
     def test_requires_a_name_for_multiple_alicats(self, set_flow) -> None:
         settings = Settings(
             alicats={
@@ -94,7 +94,7 @@ class CommandLineTests(unittest.TestCase):
         self.assertIn("mfc-2000, mfc-500", errors)
         set_flow.assert_not_awaited()
 
-    @patch("lab_control.cli.hardware.set_alicat_flow", new_callable=AsyncMock)
+    @patch("sniffler.cli.hardware.set_alicat_flow", new_callable=AsyncMock)
     def test_rejects_flow_outside_configured_limits(self, set_flow) -> None:
         settings = self.settings_with_alicat(
             port="COM3",
@@ -108,7 +108,7 @@ class CommandLineTests(unittest.TestCase):
         self.assertIn("configured limit of 2.0 SCCM", errors)
         set_flow.assert_not_awaited()
 
-    @patch("lab_control.cli.hardware.set_alicat_flow", new_callable=AsyncMock)
+    @patch("sniffler.cli.hardware.set_alicat_flow", new_callable=AsyncMock)
     def test_checks_rounded_flow_against_the_safe_maximum(self, set_flow) -> None:
         settings = self.settings_with_alicat(
             port="COM3",
@@ -122,7 +122,7 @@ class CommandLineTests(unittest.TestCase):
         self.assertIn("configured limit of 1.235 SCCM", errors)
         set_flow.assert_not_awaited()
 
-    @patch("lab_control.cli.hardware.labjack_status")
+    @patch("sniffler.cli.hardware.labjack_status")
     def test_writes_hardware_errors_to_stderr(self, labjack_status) -> None:
         labjack_status.side_effect = DeviceError("device not found")
 
@@ -139,12 +139,12 @@ class CommandLineTests(unittest.TestCase):
             ):
                 _finite_float(value)
 
-    @patch("lab_control.cli.subprocess.run")
-    @patch("lab_control.cli.Path.exists", return_value=True)
-    @patch("lab_control.cli.sys.platform", "darwin")
+    @patch("sniffler.cli.subprocess.run")
+    @patch("sniffler.cli.Path.exists", return_value=True)
+    @patch("sniffler.cli.sys.platform", "darwin")
     @patch(
-        "lab_control.cli.sys.argv",
-        ["lab-control", "--config", "other.toml", "labjack", "status"],
+        "sniffler.cli.sys.argv",
+        ["sniffler", "--config", "other.toml", "labjack", "status"],
     )
     def test_uses_homebrew_driver_with_config_argument(self, _exists, run) -> None:
         run.return_value.returncode = 0

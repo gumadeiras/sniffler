@@ -1,4 +1,4 @@
-# LabJack U3 and Alicat control
+# Sniffler
 
 This project provides a small command-line tool for:
 
@@ -57,8 +57,8 @@ to zero at power-up. The default project settings are 19200 baud and a
 Install [uv](https://docs.astral.sh/uv/getting-started/installation/). Then run:
 
 ```text
-git clone https://github.com/gumadeiras/labjack-alicat-control.git
-cd labjack-alicat-control
+git clone https://github.com/gumadeiras/sniffler.git
+cd sniffler
 uv sync
 ```
 
@@ -124,7 +124,7 @@ The table names are the names used with `--name`.
 List the serial ports:
 
 ```text
-uv run lab-control ports
+uv run sniffler ports
 ```
 
 This command lists all serial ports. It does not identify an Alicat
@@ -137,15 +137,15 @@ automatically. Common port names are:
 Check both configured devices:
 
 ```text
-uv run lab-control labjack status
-uv run lab-control alicat status
+uv run sniffler labjack status
+uv run sniffler alicat status
 ```
 
 Select each controller by name when `lab.toml` contains more than one Alicat:
 
 ```text
-uv run lab-control alicat status --name mfc-500
-uv run lab-control alicat status --name mfc-2000
+uv run sniffler alicat status --name mfc-500
+uv run sniffler alicat status --name mfc-2000
 ```
 
 The Alicat reports numeric values without unit names. The tool adds the units
@@ -157,13 +157,13 @@ from `lab.toml`. If a unit is missing, the output says
 Read AIN0:
 
 ```text
-uv run lab-control labjack read-analog --channel 0
+uv run sniffler labjack read-analog --channel 0
 ```
 
 Set FIO4 high:
 
 ```text
-uv run lab-control labjack set-digital --channel 4 --state high
+uv run sniffler labjack set-digital --channel 4 --state high
 ```
 
 The first command supports AIN0 through AIN3. The second command supports
@@ -180,7 +180,7 @@ Switches S8 through S11 map to CIO0 through CIO3, which is channel 16 through 19
 Set the mass-flow setpoint:
 
 ```text
-uv run lab-control alicat set-flow 1.0
+uv run sniffler alicat set-flow 1.0
 ```
 
 Add `--name`, for example `--name mfc-500`, when more than one Alicat is
@@ -189,7 +189,7 @@ configured.
 Set the mass-flow setpoint to zero:
 
 ```text
-uv run lab-control alicat stop
+uv run sniffler alicat stop
 ```
 
 Both commands first read the current control point and setpoint source. They
@@ -209,8 +209,8 @@ mass-flow control point.
 You can override device identity without changing `lab.toml`:
 
 ```text
-uv run lab-control labjack status --serial 320123456
-uv run lab-control alicat status --port COM3 --unit B
+uv run sniffler labjack status --serial 320123456
+uv run sniffler alicat status --port COM3 --unit B
 ```
 
 Baud rate, timeout, units, and safety limits always come from `lab.toml`.
@@ -218,7 +218,7 @@ Baud rate, timeout, units, and safety limits always come from `lab.toml`.
 Use a different configuration file:
 
 ```text
-uv run lab-control --config another-lab.toml alicat status
+uv run sniffler --config another-lab.toml alicat status
 ```
 
 ## Troubleshooting

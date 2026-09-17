@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "labjack-alicat-control"
+name = "sniffler"
 version = "0.2.0"
 description = "Simple control for a LabJack U3 and Alicat mass flow controllers"
 readme = "README.md"
@@ -14,13 +14,13 @@ dependencies = [
 ]
 
 [project.scripts]
-lab-control = "lab_control.cli:main"
+sniffler = "sniffler.cli:main"
 
 [dependency-groups]
 dev = ["ruff>=0.15,<1"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/lab_control"]
+packages = ["src/sniffler"]
 
 [tool.ruff]
 line-length = 100

@@ -9,7 +9,7 @@ from unittest.mock import patch
 from alicat.driver import FlowMeter
 from alicat.mock import Client as MockAlicatClient
 
-from lab_control.hardware import (
+from sniffler.hardware import (
     DeviceError,
     alicat_status,
     digital_channel_name,
