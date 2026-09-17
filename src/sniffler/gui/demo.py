@@ -35,17 +35,18 @@ def demo_rig() -> FakeRig:
     return FakeRig(MFCS, MFCS, realistic=True)
 
 
-def _step(seconds: float | None, open_valve: str | None = None, odor: float = ODOR) -> Step:
+def _step(seconds: float | None, *open_valves: str, odor: float = ODOR) -> Step:
     valves = dict.fromkeys(VALVES, False)
-    if open_valve is not None:
-        valves[open_valve] = True
+    for valve in open_valves:
+        valves[valve] = True
     return Step(seconds, valves, {"carrier flow": CARRIER, "odor flow": odor})
 
 
-def _odor_trial(name: str, valve: str) -> Trial:
+def _odor_trial(name: str, *valves: str) -> Trial:
+    """Three pulses of the named valves together, with a lead-in and a tail."""
     steps = [_step(2.0)]
     for _pulse in range(3):
-        steps += [_step(0.5, valve), _step(0.5)]
+        steps += [_step(0.5, *valves), _step(0.5)]
     steps.append(_step(1.5))
     return Trial(name, tuple(steps))
 
@@ -56,9 +57,10 @@ def demo_recipe() -> Recipe:
         trials=(
             _odor_trial("odor A", "valve A"),
             _odor_trial("odor B", "valve B"),
+            _odor_trial("mixture A + B", "valve A", "valve B"),
             Trial("blank", (_step(3.0, odor=0.0),)),
         ),
-        schedule=Schedule({"odor A": 2, "odor B": 2, "blank": 2}),
+        schedule=Schedule({"odor A": 2, "odor B": 2, "mixture A + B": 2, "blank": 2}),
         shutdown=_step(None, odor=0.0),
         notes="Demo recipe on fake devices. Nothing here reaches hardware.",
     )

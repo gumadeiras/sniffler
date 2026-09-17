@@ -327,8 +327,9 @@ uv run sniffler-gui --demo
 ```
 
 Demo mode opens the same window on fake devices with a sample recipe: four
-valves named *valve A* to *valve D*, and two MFCs named *carrier flow* and
-*odor flow*. The fake MFCs answer with lag and noise. Nothing reaches a serial
+valves named *valve A* to *valve D*, two MFCs named *carrier flow* and
+*odor flow*, and trials for each odor, a mixture that opens valve A and
+valve B together, and a blank. The fake MFCs answer with lag and noise. Nothing reaches a serial
 port or the LabJack. The title bar says *sniffler demo*, the status bar says
 *fake devices, no hardware*, and runs are written to `runs-demo`. Use it to
 learn the window or to debug the interface.

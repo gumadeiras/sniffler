@@ -42,7 +42,12 @@ class DemoTests(unittest.TestCase):
 
     def test_demo_recipe_is_valid_for_the_demo_rig(self) -> None:
         rig = rig_map_from_settings(demo.demo_settings())
-        self.assertEqual(recipe_problems(demo.demo_recipe(), rig), [])
+        recipe = demo.demo_recipe()
+        self.assertEqual(recipe_problems(recipe, rig), [])
+        mixture = recipe.trial("mixture A + B")
+        together = [step for step in mixture.steps if sum(step.valves.values()) == 2]
+        self.assertEqual(len(together), 3, "three pulses open valve A and valve B together")
+        self.assertTrue(all(step.valves["valve A"] and step.valves["valve B"] for step in together))
         self.assertEqual(list(rig.valves), ["valve A", "valve B", "valve C", "valve D"])
         self.assertEqual(list(rig.mfcs), ["carrier flow", "odor flow"])
         self.assertTrue(all(mfc.port.startswith("fake:") for mfc in rig.mfcs.values()))
