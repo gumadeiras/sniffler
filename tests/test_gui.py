@@ -311,6 +311,44 @@ class EditingTests(GuiTestCase):
         self.assertIn("HIGH deviation", plot._labels["mfc-500"].text())
 
 
+class SniffCueTests(GuiTestCase):
+    """The squirrel sniffs on each valve onset: driven by events, fast, and interruptible."""
+
+    def test_new_onset_restarts_the_cue_instead_of_queueing(self) -> None:
+        from sniffler.gui.squirrel import SniffWidget
+
+        widget = SniffWidget(reduced=False)
+        widget.sniff(["A"])
+        self.process_events(0.2)
+        widget.sniff(["B"])
+        self.assertEqual(widget.cue_name, "B")
+        self.assertTrue(widget.animating)
+        self.assertLess(widget._animation.currentTime(), 100, "the cue restarted from the onset")
+        widget.sniff(["A", "C"])
+        self.assertEqual(widget.cue_name, "A + C")
+
+    def test_reduced_motion_shows_the_static_cue_without_an_animation(self) -> None:
+        from sniffler.gui.squirrel import SniffWidget
+
+        widget = SniffWidget(reduced=True)
+        widget.sniff(["A"])
+        self.assertTrue(widget.cue_active)
+        self.assertFalse(widget.animating)
+        self.assertTrue(widget._hold.isActive(), "the nose stays lit for the cue duration")
+        widget.clear()
+        self.assertFalse(widget.cue_active)
+
+    def test_reduce_motion_reads_the_override_variable(self) -> None:
+        from unittest import mock
+
+        from sniffler.gui.squirrel import reduce_motion
+
+        with mock.patch.dict(os.environ, {"SNIFFLER_REDUCE_MOTION": "1"}):
+            self.assertTrue(reduce_motion())
+        with mock.patch.dict(os.environ, {"SNIFFLER_REDUCE_MOTION": "0"}):
+            self.assertFalse(reduce_motion())
+
+
 class MainWindowTests(GuiTestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -329,7 +367,7 @@ class MainWindowTests(GuiTestCase):
     def store(self) -> "QSettings":
         return QSettings(str(Path(self.temporary.name, "gui.ini")), QSettings.IniFormat)
 
-    def window(self, answer=QMessageBox.Yes):
+    def window(self, answer=QMessageBox.Yes, reduced_motion: bool = True):
         from sniffler.gui.app import MainWindow
 
         window = MainWindow(
@@ -338,6 +376,7 @@ class MainWindowTests(GuiTestCase):
             open_labjack=self.rig.open_labjack,
             open_alicat=self.rig.open_alicat,
             store=self.store(),
+            reduced_motion=reduced_motion,
         )
         window._ask = lambda *_arguments, **_options: answer
         window.warnings = []
@@ -402,6 +441,109 @@ class MainWindowTests(GuiTestCase):
         self.assertEqual(window.warnings, [])
         manifest = (status.run_directory / "manifest.json").read_text()
         self.assertIn("bench notes", manifest)
+
+    def test_sniff_cue_follows_each_valve_onset_within_one_gui_tick(self) -> None:
+        window = self.window(reduced_motion=False)
+        window.editor.set_recipe(make_recipe(0.1))
+        squirrel = window.run_view.status_panel.squirrel
+        seen: list[str] = []
+        window.controller.event_received.connect(
+            lambda event: (
+                seen.append(event.device)
+                if event.event == "valve_command"
+                and event.value == "open"
+                and event.step_index is not None
+                else None
+            )
+        )
+        window.start_run()
+        self.wait_until(lambda: not window.controller.is_running)
+        self.process_events(0.2)
+
+        self.assertEqual(window.controller.executor.status.phase, Phase.DONE)
+        self.assertEqual(seen, ["odor-1", "odor-1"], "one onset for each odor trial")
+        self.assertEqual(squirrel.cue_name, "odor-1")
+        self.assertEqual(len(window.run_view.cue_latencies), 2)
+        self.assertTrue(
+            all(0 <= latency < 0.1 for latency in window.run_view.cue_latencies),
+            f"event to cue latencies {window.run_view.cue_latencies}",
+        )
+
+    def test_rapid_start_clicks_start_one_run(self) -> None:
+        window = self.window()
+        window.editor.set_recipe(make_recipe(0.2))
+        window.start_button.click()
+        window.start_button.click()
+        window.start_run()
+        self.wait_until(lambda: window.controller.is_running)
+        self.assertFalse(window.start_button.isEnabled())
+        self.wait_until(lambda: not window.controller.is_running)
+        self.process_events(0.2)
+
+        self.assertEqual(self.rig.labjack_opens, 1)
+        self.assertEqual(window.warnings, [])
+        self.assertEqual(len(list(self.runs.iterdir())), 1)
+
+    def test_keyboard_only_authoring_and_start(self) -> None:
+        """Tab order: name, notes, trials, trial tools, steps, step tools, shutdown, schedule."""
+        from PySide6.QtTest import QTest
+
+        window = self.window()
+        window.show()
+        self.process_events()
+        editor = window.editor
+        editor._name.setFocus()
+        QTest.keyClicks(editor._name, "Keyboard recipe")
+        QTest.keyClick(window, Qt.Key_Tab)
+        self.assertIs(QApplication.focusWidget(), editor._notes)
+        QTest.keyClick(window, Qt.Key_Tab)
+        self.assertIs(QApplication.focusWidget(), editor._trial_list)
+        QTest.keyClick(window, Qt.Key_Tab)
+        self.assertIs(QApplication.focusWidget(), editor._add_trial)
+        QTest.keyClick(editor._add_trial, Qt.Key_Space)  # trial 2, selected
+        self.assertEqual(len(editor.recipe().trials), 2)
+        for expected in (editor._remove_trial, editor._duplicate_trial, editor._rename_trial):
+            QTest.keyClick(window, Qt.Key_Tab)
+            self.assertIs(QApplication.focusWidget(), expected)
+        QTest.keyClick(window, Qt.Key_Tab)
+        self.assertIs(QApplication.focusWidget(), editor._step_view)
+        # Space toggles the valve in the current cell; the arrow keys move between
+        # cells; the platform edit key (F2, or Return on macOS) opens the number editor.
+        view = editor._step_view
+        view.setCurrentIndex(editor._steps.index(0, 1))
+        QTest.keyClick(view, Qt.Key_Space)
+        self.assertTrue(editor.recipe().trials[1].steps[0].valves["odor-1"])
+        QTest.keyClick(view, Qt.Key_Left)
+        QTest.keyClick(view, Qt.Key_F2)
+        if view.state() != view.State.EditingState:
+            QTest.keyClick(view, Qt.Key_Return)
+        line = view.indexWidget(view.currentIndex())
+        self.assertIsNotNone(line, "the edit key opens the duration for typing")
+        QTest.keyClick(line, Qt.Key_A, Qt.ControlModifier)
+        QTest.keyClicks(line, "0.25")
+        QTest.keyClick(line, Qt.Key_Return)
+        self.process_events()
+        self.assertEqual(editor.recipe().trials[1].steps[0].duration_seconds, 0.25)
+        for expected in (
+            editor._add_step,
+            editor._remove_step,
+            editor._duplicate_step,
+            editor._step_up,
+            editor._step_down,
+            editor._pulse_train,
+            editor._shutdown_view,
+            editor._schedule,
+        ):
+            QTest.keyClick(window, Qt.Key_Tab)
+            self.assertIs(QApplication.focusWidget(), expected)
+        self.assertEqual(editor.problems(), [])
+        window.start_button.setFocus()
+        QTest.keyClick(window.start_button, Qt.Key_Space)
+        self.wait_until(lambda: window.controller.is_running)
+        self.assertEqual(window.tabs.currentIndex(), 1)
+        window.controller.abort_and_wait()
+        self.process_events(0.2)
+        window.close()
 
     def test_start_is_refused_while_the_recipe_has_problems(self) -> None:
         window = self.window()

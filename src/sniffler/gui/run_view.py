@@ -1,4 +1,4 @@
-"""Watch a run: status panel, whole-run timeline, and the MFC commanded-vs-actual plot."""
+"""Watch a run: the squirrel and status, the whole-run timeline, the MFC plot."""
 
 import queue
 from collections import deque
@@ -12,26 +12,20 @@ from PySide6.QtGui import QColor, QFontDatabase, QPainter, QPaintEvent, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from sniffler.executor import Executor, Phase, Sample, Status
+from sniffler.executor import Event, Executor, Phase, Sample, Status
+from sniffler.gui import theme
+from sniffler.gui.squirrel import SniffWidget
 from sniffler.recipe import Recipe, RigMap
 
-TRIAL_COLORS = [
-    QColor(94, 129, 172),
-    QColor(208, 135, 112),
-    QColor(163, 190, 140),
-    QColor(180, 142, 173),
-    QColor(235, 203, 139),
-    QColor(136, 192, 208),
-]
 DEVIATION_FRACTION = 0.05
 PLOT_POINTS = 6000
 
@@ -41,6 +35,7 @@ class RunController(QObject):
 
     status_changed = Signal(object)
     sample_received = Signal(object)
+    event_received = Signal(object)
     finished = Signal(object)
 
     def __init__(self, parent: QObject | None = None) -> None:
@@ -48,6 +43,7 @@ class RunController(QObject):
         self._executor: Executor | None = None
         self._statuses: queue.SimpleQueue[Status] = queue.SimpleQueue()
         self._samples: queue.SimpleQueue[Sample] = queue.SimpleQueue()
+        self._events: queue.SimpleQueue[Event] = queue.SimpleQueue()
         self._timer = QTimer(self)
         self._timer.setInterval(50)
         self._timer.timeout.connect(self._drain)
@@ -84,6 +80,7 @@ class RunController(QObject):
             operator_notes=operator_notes,
             on_status=self._statuses.put,
             on_sample=self._samples.put,
+            on_event=self._events.put,  # a queue put only; nothing else may run here
             **factories,
         )
         self._timer.start()
@@ -107,12 +104,16 @@ class RunController(QObject):
         return self._executor.status
 
     def _drain(self) -> None:
-        while True:
-            try:
-                sample = self._samples.get_nowait()
-            except queue.Empty:
-                break
-            self.sample_received.emit(sample)
+        for source, signal in (
+            (self._samples, self.sample_received),
+            (self._events, self.event_received),
+        ):
+            while True:
+                try:
+                    item = source.get_nowait()
+                except queue.Empty:
+                    break
+                signal.emit(item)
         status: Status | None = None
         while True:
             try:
@@ -131,7 +132,7 @@ class RunController(QObject):
 
 
 class TimelineWidget(QWidget):
-    """The whole run as one bar: trials colored by type, steps as ticks, a cursor."""
+    """The whole run as one bar: trials shaded by type, steps as ticks, a pink cursor."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -155,7 +156,7 @@ class TimelineWidget(QWidget):
                 boundaries.append(offset)
             self._segments.append((start, trial.duration_seconds, name, boundaries))
             if name not in self._colors:
-                self._colors[name] = TRIAL_COLORS[len(self._colors) % len(TRIAL_COLORS)]
+                self._colors[name] = QColor(theme.TRIAL_RAMP[len(self._colors) % 6])
             start += trial.duration_seconds
         self._total = start
         self._cursor = 0.0
@@ -178,10 +179,11 @@ class TimelineWidget(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         area = self.rect().adjusted(1, 8, -1, -20)
-        painter.setPen(QPen(QColor(120, 120, 120)))
-        painter.setBrush(QColor(245, 245, 245))
+        painter.setPen(QPen(QColor(theme.LINE)))
+        painter.setBrush(QColor(theme.PANEL))
         painter.drawRect(area)
         if self._total <= 0 or not self._segments:
+            painter.setPen(QColor(theme.INK_SOFT))
             painter.drawText(self.rect(), Qt.AlignCenter, "No run planned.")
             return
         scale = area.width() / self._total
@@ -190,44 +192,56 @@ class TimelineWidget(QWidget):
             width = max(1.0, duration * scale)
             color = QColor(self._colors[name])
             if self._current is not None and index != self._current:
-                color.setAlpha(140)
-            painter.setPen(QPen(QColor(255, 255, 255)))
+                color.setAlpha(150)
+            painter.setPen(QPen(QColor(theme.PANEL)))
             painter.setBrush(color)
             painter.drawRect(QRectF(left, area.top(), width, area.height()))
-            painter.setPen(QPen(QColor(255, 255, 255, 180)))
+            painter.setPen(QPen(QColor(theme.PANEL)))
             for boundary in boundaries:
                 x = area.left() + boundary * scale
                 painter.drawLine(int(x), area.top() + 4, int(x), area.bottom() - 4)
         cursor_x = area.left() + self._cursor * scale
-        painter.setPen(QPen(QColor(20, 20, 20), 2))
+        painter.setPen(QPen(QColor(theme.PINK), 2))
         painter.drawLine(int(cursor_x), area.top() - 6, int(cursor_x), area.bottom() + 6)
-        painter.setPen(QPen(QColor(60, 60, 60)))
-        legend = "   ".join(f"■ {name}" for name in self._colors)
+        metrics = painter.fontMetrics()
+        x = self.rect().left() + 2
+        baseline = self.rect().bottom() - 4
+        square = metrics.ascent() - 2
+        for name, color in self._colors.items():
+            painter.fillRect(x, baseline - square, square, square, color)
+            painter.setPen(QPen(QColor(theme.NAVY)))
+            painter.drawText(x + square + 4, baseline, name)
+            x += square + 4 + metrics.horizontalAdvance(name) + theme.SECTION_GAP
+        painter.setPen(QPen(QColor(theme.INK_SOFT)))
         painter.drawText(
             self.rect().adjusted(2, 0, -2, -2),
-            Qt.AlignBottom | Qt.AlignLeft,
-            f"{legend}    total {self._total:.1f} s",
+            Qt.AlignBottom | Qt.AlignRight,
+            f"total {self._total:.1f} s",
         )
 
 
 class MfcPlot(QWidget):
-    """Commanded versus actual flow for every MFC, with a deviation indicator."""
+    """Commanded versus actual flow for every MFC, with the deviation stated in words."""
 
     def __init__(self, rig: RigMap, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._rig = rig
-        self._plot = pg.PlotWidget(background="w")
-        self._plot.addLegend(offset=(10, 10))
-        self._plot.setLabel("bottom", "run time", units="s")
-        self._plot.setLabel("left", "mass flow")
-        self._plot.showGrid(x=True, y=True, alpha=0.2)
+        self._plot = pg.PlotWidget(background=theme.PANEL)
+        self._plot.addLegend(offset=(10, 10), labelTextColor=theme.NAVY)
+        self._plot.setLabel("bottom", "run time", units="s", color=theme.INK_SOFT)
+        self._plot.setLabel("left", "mass flow", color=theme.INK_SOFT)
+        self._plot.showGrid(x=True, y=True, alpha=0.15)
+        for axis in ("bottom", "left"):
+            self._plot.getAxis(axis).setPen(pg.mkPen(theme.LINE))
+            self._plot.getAxis(axis).setTextPen(pg.mkPen(theme.INK_SOFT))
         self._commanded: dict[str, Any] = {}
         self._actual: dict[str, Any] = {}
         self._history: dict[str, deque[tuple[float, float | None, float | None]]] = {}
         self._labels: dict[str, QLabel] = {}
         labels = QVBoxLayout()
+        labels.setSpacing(theme.GAP // 2)
         for index, name in enumerate(rig.mfcs):
-            color = TRIAL_COLORS[index % len(TRIAL_COLORS)]
+            color = QColor(theme.SERIES[index % len(theme.SERIES)])
             self._commanded[name] = self._plot.plot(
                 pen=pg.mkPen(color, width=2, style=Qt.DashLine), name=f"{name} commanded"
             )
@@ -241,6 +255,7 @@ class MfcPlot(QWidget):
             labels.addWidget(label)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(theme.GAP)
         layout.addWidget(self._plot, stretch=1)
         layout.addLayout(labels)
         if not rig.mfcs:
@@ -284,34 +299,54 @@ class MfcPlot(QWidget):
         verdict = f"HIGH deviation, more than {limit:.2f}" if high else "within limit"
         label.setText(
             f"{sample.mfc}: commanded {sample.commanded_setpoint:.2f}, "
-            f"actual {sample.mass_flow:.2f} {unit}, deviation {deviation:+.2f} {unit}: {verdict}"
+            f"actual {sample.mass_flow:.2f} {unit}, deviation {deviation:+.2f}: {verdict}"
         )
-        label.setStyleSheet("color: #9b1c1c; font-weight: bold;" if high else "color: #1c7a3a;")
+        label.setStyleSheet(f"color: {theme.PINK_TEXT}; font-weight: bold;" if high else "")
+
+
+def _valves_text(valves: dict[str, bool]) -> str:
+    """Name the open valves; count the closed ones. Twelve names of 'closed' say nothing."""
+    if not valves:
+        return "—"
+    opened = [name for name, state in valves.items() if state]
+    closed = len(valves) - len(opened)
+    if not opened:
+        return f"all {closed} closed"
+    text = ", ".join(f"{name} open" for name in opened)
+    if closed:
+        text += f"; {closed} closed"
+    return text
 
 
 class StatusPanel(QWidget):
-    """Current trial, highlighted current step, elapsed and remaining time, commanded state."""
+    """Phase and message, the squirrel, trial and time, commanded and measured state."""
 
-    def __init__(self, rig: RigMap, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, rig: RigMap, parent: QWidget | None = None, *, reduced_motion: bool | None = None
+    ) -> None:
         super().__init__(parent)
         self._rig = rig
         self._recipe: Recipe | None = None
+        self.squirrel = SniffWidget(reduced=reduced_motion)
         self._phase = QLabel("idle")
-        self._phase.setStyleSheet("font-size: 16px; font-weight: bold;")
+        self._phase.setFont(theme.font(theme.TITLE_PX, bold=True))
         self._message = QLabel("")
         self._message.setWordWrap(True)
         self._trial = QLabel("—")
+        self._trial.setWordWrap(True)
         self._time = QLabel("—")
         time_font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+        time_font.setPixelSize(theme.BODY_PX)
         self._time.setFont(time_font)
+        # The run directory name only; the status bar names the runs folder.
         self._directory = QLabel("—")
         self._directory.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._directory.setAccessibleName("Run directory")
         self._valves = QLabel("—")
         self._valves.setWordWrap(True)
         self._setpoints = QLabel("—")
         self._setpoints.setWordWrap(True)
-        self._readback = QLabel("—")
-        self._readback.setWordWrap(True)
+        self._readback = QLabel("—")  # one line per MFC, so its height is known
         self._latest: dict[str, Sample] = {}
 
         self._steps = QTableWidget(0, 3)
@@ -320,22 +355,41 @@ class StatusPanel(QWidget):
         self._steps.verticalHeader().setVisible(False)
         self._steps.setSelectionMode(QAbstractItemView.NoSelection)
         self._steps.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self._steps.setMaximumHeight(160)
+        self._steps.setFocusPolicy(Qt.NoFocus)
+        self._steps.setMinimumHeight(3 * theme.ROW_PX)
+        self._steps.setMaximumHeight(6 * theme.ROW_PX)
         self._steps_trial: str | None = None
 
+        headline = QVBoxLayout()
+        headline.setSpacing(theme.GAP // 2)
+        headline.addWidget(self._phase)
+        headline.addWidget(self._message)
+        headline.addStretch(1)
+        top = QHBoxLayout()
+        top.setSpacing(theme.GAP)
+        top.addLayout(headline, stretch=1)
+        top.addWidget(self.squirrel, stretch=2)
+        top.setAlignment(self.squirrel, Qt.AlignTop)
+
         form = QFormLayout()
-        form.addRow("Phase", self._phase)
-        form.addRow("Message", self._message)
+        form.setHorizontalSpacing(theme.SECTION_GAP)
+        form.setVerticalSpacing(theme.GAP // 2)
         form.addRow("Trial", self._trial)
         form.addRow("Time", self._time)
-        form.addRow("Run directory", self._directory)
-        form.addRow("Commanded valves", self._valves)
-        form.addRow("Commanded setpoints", self._setpoints)
-        form.addRow("Live readback", self._readback)
+        form.addRow("Directory", self._directory)
+        commanded = QLabel("Commanded")
+        commanded.setFont(theme.font(bold=True))
+        form.addRow(commanded)
+        form.addRow("Valves", self._valves)
+        form.addRow("Setpoints", self._setpoints)
+        measured = QLabel("Measured")
+        measured.setFont(theme.font(bold=True))
+        form.addRow(measured, self._readback)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(theme.GAP)
+        layout.addLayout(top)
         layout.addLayout(form)
-        layout.addWidget(QLabel("Steps of the current trial"))
         layout.addWidget(self._steps)
 
     def set_recipe(self, recipe: Recipe | None) -> None:
@@ -343,23 +397,21 @@ class StatusPanel(QWidget):
         self._steps_trial = None
         self._steps.setRowCount(0)
         self._latest = {}
+        self.squirrel.clear()
 
     def show_status(self, status: Status, elapsed: float) -> None:
         self._phase.setText(status.phase.value)
         self._message.setText(status.message)
+        self.squirrel.set_phase(status.phase)
         if status.run_directory is not None:
-            self._directory.setText(str(status.run_directory))
+            self._directory.setText(status.run_directory.name)
+            self._directory.setToolTip(str(status.run_directory))
         total = len(status.order)
         if status.trial_index is None or total == 0:
             self._trial.setText("—")
         else:
             self._trial.setText(f"{status.trial_index + 1} of {total}: {status.trial_name}")
-        self._valves.setText(
-            ", ".join(
-                f"{name} {'open' if state else 'closed'}" for name, state in status.valves.items()
-            )
-            or "—"
-        )
+        self._valves.setText(_valves_text(status.valves))
         self._setpoints.setText(
             ", ".join(
                 f"{name} {value:g} {self._rig.mfcs[name].flow_unit}"
@@ -386,9 +438,9 @@ class StatusPanel(QWidget):
                     item = self._steps.item(row, column)
                     if item is not None:
                         item.setBackground(
-                            QColor(255, 236, 170)
+                            QColor(theme.PINK_WASH)
                             if row == status.step_index
-                            else QColor(255, 255, 255)
+                            else QColor(theme.PANEL)
                         )
 
     def _show_steps(self, status: Status) -> None:
@@ -406,7 +458,9 @@ class StatusPanel(QWidget):
                 )
                 self._steps.setItem(row, 0, QTableWidgetItem(str(row + 1)))
                 self._steps.setItem(row, 1, QTableWidgetItem(f"{step.duration_seconds:g}"))
-                self._steps.setItem(row, 2, QTableWidgetItem(state or "all valves closed"))
+                item = QTableWidgetItem(state or "all valves closed")
+                item.setToolTip(item.text())
+                self._steps.setItem(row, 2, item)
 
     def show_sample(self, sample: Sample) -> None:
         self._latest[sample.mfc] = sample
@@ -416,40 +470,57 @@ class StatusPanel(QWidget):
             actual = "?" if latest.mass_flow is None else f"{latest.mass_flow:.2f}"
             device = "?" if latest.device_setpoint is None else f"{latest.device_setpoint:.2f}"
             parts.append(f"{name} flow {actual} {unit} (device setpoint {device})")
-        self._readback.setText("; ".join(parts) or "—")
+        self._readback.setText("\n".join(parts) or "—")
 
 
 class RunView(QWidget):
-    """The Run tab body: status, timeline, and MFC plot."""
+    """The Run tab body: status with the squirrel, the MFC plot, and the timeline."""
 
-    def __init__(self, rig: RigMap, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, rig: RigMap, parent: QWidget | None = None, *, reduced_motion: bool | None = None
+    ) -> None:
         super().__init__(parent)
-        self.status_panel = StatusPanel(rig)
+        self.status_panel = StatusPanel(rig, reduced_motion=reduced_motion)
         self.timeline = TimelineWidget()
         self.plot = MfcPlot(rig)
-        status_box = QGroupBox("Status")
-        QVBoxLayout(status_box).addWidget(self.status_panel)
-        timeline_box = QGroupBox("Run timeline")
-        QVBoxLayout(timeline_box).addWidget(self.timeline)
-        plot_box = QGroupBox("MFC commanded versus actual")
-        QVBoxLayout(plot_box).addWidget(self.plot)
+        self.cue_latencies: list[float] = []
+        # The panel scrolls when a large rig needs more lines than the window has;
+        # overlapping text is never an option.
+        scroll = QScrollArea()
+        scroll.setWidget(self.status_panel)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.viewport().setAutoFillBackground(False)
+        self.status_panel.setAutoFillBackground(False)
         top = QHBoxLayout()
-        top.addWidget(status_box, stretch=1)
-        top.addWidget(plot_box, stretch=1)
+        top.setSpacing(theme.SECTION_GAP)
+        top.addWidget(scroll, stretch=1)
+        top.addWidget(self.plot, stretch=1)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(theme.SECTION_GAP)
         layout.addLayout(top, stretch=1)
-        layout.addWidget(timeline_box)
+        layout.addWidget(self.timeline)
 
     def prepare(self, recipe: Recipe) -> None:
         self.status_panel.set_recipe(recipe)
         self.timeline.clear()
         self.plot.clear()
+        self.cue_latencies = []
 
     def show_status(self, status: Status, elapsed: float, recipe: Recipe | None) -> None:
         if recipe is not None and status.order and status.phase == Phase.STARTING:
             self.timeline.set_plan(recipe, status.order)
         self.status_panel.show_status(status, elapsed)
         self.timeline.set_progress(elapsed, status.trial_index)
+
+    def show_event(self, event: Event, elapsed: float) -> None:
+        """A valve that opened during a step makes the squirrel sniff."""
+        if event.event != "valve_command" or event.value != "open" or event.step_index is None:
+            return
+        self.cue_latencies.append(elapsed - event.returned_run_seconds)
+        self.status_panel.squirrel.sniff([event.device])
 
     def tick(self, status: Status, elapsed: float) -> None:
         self.status_panel.show_time(status, elapsed)

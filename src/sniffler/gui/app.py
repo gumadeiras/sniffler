@@ -9,13 +9,12 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QSettings, Qt, QTimer
+from PySide6.QtCore import QSettings, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -26,13 +25,16 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
+    QToolBar,
     QVBoxLayout,
     QWidget,
 )
 
 from sniffler import hardware
 from sniffler.config import ConfigError, Settings, load_settings
-from sniffler.executor import Phase, Sample, Status
+from sniffler.executor import Event, Phase, Sample, Status
+from sniffler.gui import theme
+from sniffler.gui.icons import icon
 from sniffler.gui.recipe_editor import RecipeEditor
 from sniffler.gui.run_view import RunController, RunView
 from sniffler.hardware import DeviceError
@@ -62,16 +64,15 @@ class RigPanel(QWidget):
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._table.setWordWrap(True)
-        self.read_limits = QPushButton("Read device limits")
+        self.read_limits = QPushButton(icon("read-limits"), "Read device limits")
         self.read_limits.setToolTip(
             "Read the full scale of every MFC. This command changes no output."
         )
         layout = QVBoxLayout(self)
-        layout.addWidget(
-            QLabel(
-                "Recipes use these names. The map comes from lab.toml and cannot be changed here."
-            )
-        )
+        layout.setContentsMargins(theme.MARGIN, theme.MARGIN, theme.MARGIN, theme.MARGIN)
+        layout.setSpacing(theme.GAP)
+        source = QLabel("Read from lab.toml. Edit that file to change the map.")
+        layout.addWidget(source)
         layout.addWidget(self._table, stretch=1)
         layout.addWidget(self.read_limits, alignment=Qt.AlignLeft)
         self.show_rig(rig)
@@ -80,7 +81,7 @@ class RigPanel(QWidget):
         rows: list[tuple[str, str, str, str]] = []
         for name, channel in rig.valves.items():
             line = hardware.digital_channel_name(channel)
-            rows.append((name, "valve", f"channel {channel} ({line})", "open or closed"))
+            rows.append((name, "valve", f"channel {channel} ({line})", "—"))
         for name, mfc in rig.mfcs.items():
             limits = [f"minimum {mfc.minimum_flow:g}"]
             if mfc.maximum_flow is not None:
@@ -119,9 +120,11 @@ class MainWindow(QMainWindow):
         open_alicat: Callable[..., Any] = hardware.open_alicat,
         read_full_scale: Callable[..., Any] = hardware.alicat_full_scale,
         store: QSettings | None = None,
+        reduced_motion: bool | None = None,
     ) -> None:
         super().__init__()
         self.resize(1280, 860)
+        self.setWindowIcon(theme.window_icon())
         self._settings = settings
         self._rig = rig
         self._factories = {"open_labjack": open_labjack, "open_alicat": open_alicat}
@@ -134,7 +137,7 @@ class MainWindow(QMainWindow):
         self._tell = QMessageBox.warning
 
         self.editor = RecipeEditor(rig)
-        self.run_view = RunView(rig)
+        self.run_view = RunView(rig, reduced_motion=reduced_motion)
         self.rig_panel = RigPanel(rig)
         self.controller = RunController(self)
 
@@ -142,12 +145,15 @@ class MainWindow(QMainWindow):
         self._recipe_summary.setWordWrap(True)
         self._seed_label = QLabel("—")
         self._notes = QPlainTextEdit()
-        self._notes.setPlaceholderText("Operator notes for this run (stored in the manifest)")
-        self._notes.setMaximumHeight(70)
-        self.start_button = QPushButton("Start run")
-        self.stop_button = QPushButton("Stop after this trial")
+        self._notes.setPlaceholderText("Stored in the run manifest")
+        self._notes.setMaximumHeight(2 * theme.ROW_PX)
+        self._notes.setAccessibleName("Run notes")
+        self.start_button = QPushButton(icon("start"), "Start run")
+        self.start_button.setObjectName("primary")
+        self.stop_button = QPushButton(icon("stop"), "Stop after this trial")
+        self.stop_button.setObjectName("consequential")
         self.abort_button = QPushButton("Abort now")
-        self.abort_button.setStyleSheet("font-weight: bold; color: #9b1c1c;")
+        self.abort_button.setObjectName("consequential")
         self.abort_button.setToolTip(
             "Stop now and force the safe state: all valves closed, every MFC setpoint zero."
         )
@@ -169,26 +175,29 @@ class MainWindow(QMainWindow):
     # Layout ------------------------------------------------------------
 
     def _build_layout(self) -> None:
-        controls = QGroupBox("Run controls")
         form = QFormLayout()
+        form.setHorizontalSpacing(theme.SECTION_GAP)
+        form.setVerticalSpacing(theme.GAP // 2)
         form.addRow("Recipe", self._recipe_summary)
         form.addRow("Seed", self._seed_label)
-        form.addRow("Operator notes", self._notes)
+        form.addRow("Notes", self._notes)
         buttons = QHBoxLayout()
+        buttons.setSpacing(theme.GAP)
         buttons.addWidget(self.start_button)
         buttons.addWidget(self.stop_button)
         buttons.addWidget(self.abort_button)
         buttons.addStretch(1)
-        controls_layout = QVBoxLayout(controls)
-        controls_layout.addLayout(form)
-        controls_layout.addLayout(buttons)
 
         run_tab = QWidget()
         run_layout = QVBoxLayout(run_tab)
-        run_layout.addWidget(controls)
+        run_layout.setContentsMargins(theme.MARGIN, theme.MARGIN, theme.MARGIN, theme.MARGIN)
+        run_layout.setSpacing(theme.SECTION_GAP)
+        run_layout.addLayout(form)
+        run_layout.addLayout(buttons)
         run_layout.addWidget(self.run_view, stretch=1)
 
         self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
         self.tabs.addTab(self.editor, "Recipe")
         self.tabs.addTab(run_tab, "Run")
         self.tabs.addTab(self.rig_panel, "Rig map")
@@ -196,16 +205,25 @@ class MainWindow(QMainWindow):
 
     def _build_menu(self) -> None:
         menu = self.menuBar().addMenu("&File")
-        for text, shortcut, handler in (
-            ("&New recipe", "Ctrl+N", self.new_recipe),
-            ("&Open recipe…", "Ctrl+O", self.open_recipe),
-            ("&Save recipe", "Ctrl+S", self.save_recipe),
-            ("Save recipe &as…", "Ctrl+Shift+S", self.save_recipe_as),
+        toolbar = QToolBar("File")
+        toolbar.setMovable(False)
+        toolbar.setIconSize(QSize(theme.ICON_PX, theme.ICON_PX))
+        self.addToolBar(toolbar)
+        for text, name, shortcut, handler, in_toolbar in (
+            ("&New", "new", "Ctrl+N", self.new_recipe, True),
+            ("&Open…", "open", "Ctrl+O", self.open_recipe, True),
+            ("&Save", "save", "Ctrl+S", self.save_recipe, True),
+            ("Save &as…", None, "Ctrl+Shift+S", self.save_recipe_as, False),
         ):
             action = QAction(text, self)
+            if name is not None:
+                action.setIcon(icon(name))
             action.setShortcut(shortcut)
+            action.setToolTip(f"{text.replace('&', '').rstrip('…')} recipe ({shortcut})")
             action.triggered.connect(handler)
             menu.addAction(action)
+            if in_toolbar:
+                toolbar.addAction(action)
         menu.addSeparator()
         quit_action = QAction("&Quit", self)
         quit_action.setShortcut("Ctrl+Q")
@@ -219,6 +237,7 @@ class MainWindow(QMainWindow):
         self.abort_button.clicked.connect(self.controller.abort)
         self.controller.status_changed.connect(self._on_status)
         self.controller.sample_received.connect(self._on_sample)
+        self.controller.event_received.connect(self._on_event)
         self.controller.finished.connect(self._on_finished)
         self.rig_panel.read_limits.clicked.connect(self.read_device_limits)
 
@@ -390,9 +409,7 @@ class MainWindow(QMainWindow):
         self._recipe_summary.setText(f"{name}: {trials or 'no trials'}; {duration}")
         seed = recipe.schedule.seed
         self._seed_label.setText(
-            "a new random seed for each run, recorded in the manifest"
-            if seed is None
-            else f"{seed} (from the recipe)"
+            "random, saved in the manifest" if seed is None else f"{seed} (from the recipe)"
         )
         if not self.controller.is_running:
             self.start_button.setEnabled(not problems)
@@ -449,6 +466,9 @@ class MainWindow(QMainWindow):
     def _on_sample(self, sample: Sample) -> None:
         self.run_view.plot.add_sample(sample)
         self.run_view.status_panel.show_sample(sample)
+
+    def _on_event(self, event: Event) -> None:
+        self.run_view.show_event(event, self.controller.elapsed_seconds())
 
     def _on_tick(self) -> None:
         executor = self.controller.executor
@@ -523,6 +543,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if restarted_status is not None:
             return restarted_status
     application = QApplication.instance() or QApplication(sys.argv[:1])
+    theme.apply(application)
     try:
         settings = load_settings(arguments.config)
         rig = rig_map_from_settings(settings)

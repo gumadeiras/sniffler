@@ -256,14 +256,17 @@ A recipe has three levels and one primitive:
   the last trial or after *Stop after this trial*.
 
 Build the recipe in the *Recipe* tab. Steps are rows in a table. One click
-anywhere in a valve cell opens or closes that valve. Double-click a trial name
-to rename it. Each cell checks its value at once: a duration must be greater
+anywhere in a valve cell opens or closes that valve, and Space does the same
+from the keyboard. Double-click a trial name to rename it. The icon buttons
+under the trial list and under the step table add, remove, duplicate, and move
+items; each one names its command in a tooltip. The toolbar holds New, Open,
+and Save. Each cell checks its value at once: a duration must be greater
 than zero, and a setpoint must respect `minimum_flow`, `maximum_flow`, and
 `allow_negative_flow` from `lab.toml` and the device full scale. A cell with a
 problem is red and shows the reason in its tooltip. The run cannot start while
 a problem exists.
 
-*Generate pulse train…* creates a train of pulses on one valve. The result is
+*Pulse train…* creates a train of pulses on one valve. The result is
 ordinary step rows, one for each pulse and one for each gap, and you can edit
 each row.
 
@@ -280,6 +283,22 @@ to repeat the same order, or leave it empty for a new seed for each run.
 
 *Read device limits* in the *Rig map* tab reads the full scale of each MFC.
 This command changes no output.
+
+### Watch the run
+
+The *Run* tab shows the phase, the current trial and step, the commanded state,
+the measured flow, the whole run as one timeline, and the MFC plot. The window
+uses one light palette on every platform. Pink marks live attention only: the
+sniff, the current step, the progress cursor, and a high flow deviation.
+
+When a valve opens during a step, the squirrel sniffs: the scent lines rise
+from its nose and the valve name is shown large, so an operator can see each
+odor onset from across the room. The cue is driven by the valve event that the
+executor records, not by a timer, and a faster pulse train restarts the cue
+instead of queueing it. When the operating system reduce-motion setting is on
+(macOS: Accessibility, Display; Windows: animation effects off), nothing moves
+and the nose lights up instead. Set `SNIFFLER_REDUCE_MOTION=1` to force this
+on any system, or `0` to force motion on.
 
 ### Stop and abort
 
