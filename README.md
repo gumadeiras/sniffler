@@ -302,7 +302,8 @@ This command changes no output.
 
 The *Run* tab shows the phase, the current trial and step, the commanded
 valves, the whole run as one timeline, and the MFC plot with one readout row
-for each MFC: commanded, measured, deviation, and the verdict in words. The
+for each MFC: commanded, measured, and deviation. A deviation of more than
+5 % of the full scale is marked with a leading "!" in bold pink. The
 timeline has one lane for each valve the recipe opens, filled where the recipe
 plans it open. Nothing on this tab moves while a run changes the content: the
 labels have fixed heights, the plot axes are fixed at run start, and a splitter

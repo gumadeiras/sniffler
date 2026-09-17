@@ -307,15 +307,18 @@ class EditingTests(GuiTestCase):
         self.assertEqual(view.state(), view.State.EditingState)
         editor.close()
 
-    def test_deviation_indicator_says_it_in_words(self) -> None:
+    def test_high_deviation_is_marked_in_the_cell_not_by_color_alone(self) -> None:
         from sniffler.executor import Sample
         from sniffler.gui.run_view import MfcPlot
 
         plot = MfcPlot(RIG)
         plot.add_sample(Sample("mfc-500", 1.0, 100.0, 100.0, 99.0, "t"))
-        self.assertIn("within limit", plot._labels["mfc-500"].text())
+        self.assertEqual(plot._labels["mfc-500"].text(), "-1.00 SCCM")
+        self.assertEqual(plot._labels["mfc-500"].styleSheet(), "")
         plot.add_sample(Sample("mfc-500", 2.0, 100.0, 100.0, 60.0, "t"))
-        self.assertIn("HIGH deviation", plot._labels["mfc-500"].text())
+        self.assertEqual(plot._labels["mfc-500"].text(), "! -40.00 SCCM")
+        self.assertIn("bold", plot._labels["mfc-500"].styleSheet())
+        self.assertIn("More than the limit", plot._labels["mfc-500"].toolTip())
 
 
 class TimelineTests(GuiTestCase):
@@ -502,7 +505,7 @@ class MainWindowTests(GuiTestCase):
         self.assertEqual(window.run_view.status_panel._phase.text(), "done")
         self.assertIn("4 of 4", window.run_view.status_panel._trial.text())
         self.assertGreater(len(window.run_view.plot._history["mfc-500"]), 0)
-        self.assertIn("within limit", window.run_view.plot._labels["mfc-500"].text())
+        self.assertNotIn("!", window.run_view.plot._labels["mfc-500"].text())
         self.assertIn("SCCM", window.run_view.plot._cells["mfc-500"]["measured"].text())
         self.assertTrue(window.start_button.isEnabled())
         self.assertEqual(window.warnings, [])

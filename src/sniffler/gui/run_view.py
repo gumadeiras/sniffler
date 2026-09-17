@@ -196,15 +196,15 @@ class MfcPlot(QWidget):
         self._actual: dict[str, Any] = {}
         self._history: dict[str, deque[tuple[float, float | None, float | None]]] = {}
         self._cells: dict[str, dict[str, QLabel]] = {}
-        self._labels: dict[str, QLabel] = {}  # the verdict cell, in words
+        self._labels: dict[str, QLabel] = {}  # the deviation cell, which carries the verdict
         readout = QGridLayout()
         readout.setHorizontalSpacing(theme.SECTION_GAP)
         readout.setVerticalSpacing(theme.GAP // 2)
-        for column, title in enumerate(("", "commanded", "measured", "deviation", "")):
+        for column, title in enumerate(("", "commanded", "measured", "deviation")):
             header = QLabel(title)
             header.setStyleSheet(f"color: {theme.INK_SOFT};")
             readout.addWidget(header, 0, column, alignment=Qt.AlignRight)
-        number_width = QFontMetrics(_fixed_font()).horizontalAdvance("+00000.00 SCCM")
+        number_width = QFontMetrics(_fixed_font()).horizontalAdvance("! +00000.00 SCCM")
         for row, (name, mfc) in enumerate(rig.mfcs.items(), start=1):
             color = QColor(theme.SERIES[(row - 1) % len(theme.SERIES)])
             self._commanded[name] = self._plot.plot(
@@ -224,15 +224,9 @@ class MfcPlot(QWidget):
                 cell.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 readout.addWidget(cell, row, column)
                 cells[key] = cell
-            verdict = QLabel("")
-            verdict.setMinimumWidth(
-                QFontMetrics(theme.font(bold=True)).horizontalAdvance("HIGH deviation")
-            )
-            readout.addWidget(verdict, row, 4)
-            cells["verdict"] = verdict
             self._cells[name] = cells
-            self._labels[name] = verdict
-        readout.setColumnStretch(5, 1)
+            self._labels[name] = cells["deviation"]
+        readout.setColumnStretch(4, 1)
         caption = QLabel("dashed commanded, solid measured")
         caption.setStyleSheet(f"color: {theme.INK_SOFT};")
         layout = QVBoxLayout(self)
@@ -252,9 +246,8 @@ class MfcPlot(QWidget):
             self._actual[name].setData([], [])
             for key in ("commanded", "measured", "deviation"):
                 self._cells[name][key].setText("—")
-            self._cells[name]["verdict"].setText("")
-            self._cells[name]["verdict"].setStyleSheet("")
-            self._cells[name]["verdict"].setToolTip("")
+            self._cells[name]["deviation"].setStyleSheet("")
+            self._cells[name]["deviation"].setToolTip("")
         self._plot.setXRange(0.0, 1.0, padding=0.02)
         self._plot.setYRange(0.0, 1.0, padding=0.05)
 
@@ -292,24 +285,27 @@ class MfcPlot(QWidget):
         cells["measured"].setText(
             "—" if sample.mass_flow is None else f"{sample.mass_flow:.2f} {mfc.flow_unit}"
         )
-        if sample.commanded_setpoint is None:
-            cells["commanded"].setText("—")
+        if sample.commanded_setpoint is None or sample.mass_flow is None:
+            cells["commanded"].setText(
+                "—"
+                if sample.commanded_setpoint is None
+                else f"{sample.commanded_setpoint:.2f} {mfc.flow_unit}"
+            )
             cells["deviation"].setText("—")
-            cells["verdict"].setText("")
+            cells["deviation"].setStyleSheet("")
             return
         cells["commanded"].setText(f"{sample.commanded_setpoint:.2f} {mfc.flow_unit}")
-        if sample.mass_flow is None:
-            cells["deviation"].setText("—")
-            cells["verdict"].setText("no reading")
-            return
         deviation = sample.mass_flow - sample.commanded_setpoint
         reference = mfc.full_scale or mfc.maximum_flow or abs(sample.commanded_setpoint) or 1.0
         limit = max(DEVIATION_FRACTION * reference, 0.01)
         high = abs(deviation) > limit
-        cells["deviation"].setText(f"{deviation:+.2f} {mfc.flow_unit}")
-        cells["verdict"].setText("HIGH deviation" if high else "within limit")
-        cells["verdict"].setToolTip(f"The limit is {limit:.2f} {mfc.flow_unit}.")
-        cells["verdict"].setStyleSheet(
+        # The deviation cell carries the verdict: a leading "!" and bold pink when the
+        # deviation is more than the limit. The mark, not the color alone, says it.
+        cells["deviation"].setText(f"{'! ' if high else ''}{deviation:+.2f} {mfc.flow_unit}")
+        cells["deviation"].setToolTip(
+            f"{'More' if high else 'Not more'} than the limit of {limit:.2f} {mfc.flow_unit}."
+        )
+        cells["deviation"].setStyleSheet(
             f"color: {theme.PINK_TEXT}; font-weight: bold;" if high else ""
         )
 
