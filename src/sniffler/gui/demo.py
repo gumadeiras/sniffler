@@ -80,6 +80,7 @@ def demo_window(
         store=store if store is not None else QSettings("sniffler", "sniffler-gui-demo"),
         demo=True,
     )
-    if window.recipe_path is None:
-        window.show_recipe(demo_recipe())
+    # Always the demo recipe: a recipe saved for the real rig names devices the demo
+    # does not have, and restoring it would leave Start disabled with no clear reason.
+    window.show_recipe(demo_recipe())
     return window

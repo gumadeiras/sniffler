@@ -109,6 +109,17 @@ class ValidationTests(unittest.TestCase):
     def test_accepts_a_complete_recipe(self) -> None:
         validate_recipe(make_recipe(), RIG)
 
+    def test_unknown_mfc_hint_quotes_a_name_with_a_space(self) -> None:
+        from sniffler.recipe import _step_problems
+
+        step = Step(1.0, dict.fromkeys(RIG.valves, False), {"aux flow": 1.0})
+        problems = _step_problems(step, RIG, "Trial 'x', step 1", shutdown=False)
+        self.assertIn(
+            "Trial 'x', step 1: unknown MFC 'aux flow'. "
+            'Add it to [alicat."aux flow"] in lab.toml.',
+            problems,
+        )
+
     def test_refuses_unknown_and_missing_devices(self) -> None:
         step = Step(1.0, {"odor-1": True, "odor-9": False}, {})
         recipe = make_recipe(trials=(Trial("odor", (step,)),), schedule=Schedule({"odor": 1}))

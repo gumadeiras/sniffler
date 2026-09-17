@@ -14,7 +14,15 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from sniffler.executor import Phase
 from sniffler.gui import demo
-from sniffler.recipe import Recipe, Schedule, Trial, recipe_problems, rig_map_from_settings
+from sniffler.recipe import (
+    Recipe,
+    Schedule,
+    Step,
+    Trial,
+    recipe_problems,
+    rig_map_from_settings,
+    save_recipe,
+)
 
 
 class DemoTests(unittest.TestCase):
@@ -51,6 +59,26 @@ class DemoTests(unittest.TestCase):
         self.assertEqual(list(rig.valves), ["valve A", "valve B", "valve C", "valve D"])
         self.assertEqual(list(rig.mfcs), ["carrier flow", "odor flow"])
         self.assertTrue(all(mfc.port.startswith("fake:") for mfc in rig.mfcs.values()))
+
+    def test_demo_opens_its_own_recipe_even_when_another_was_remembered(self) -> None:
+        other = Path(self.temporary.name, "real-rig.json")
+        save_recipe(
+            other,
+            Recipe(
+                "real rig",
+                (Trial("t", (Step(1.0, {"odor-1": True}, {"mfc-500": 1.0}),)),),
+                Schedule({"t": 1}),
+                Step(None, {"odor-1": False}, {"mfc-500": 0.0}),
+            ),
+        )
+        self.store.setValue("last_recipe", str(other))
+        self.store.sync()
+
+        window = demo.demo_window(self.store, Path(self.temporary.name, "runs-demo"))
+
+        self.assertIsNone(window.recipe_path)
+        self.assertEqual(window.editor.recipe().name, "demo pulses")
+        self.assertTrue(window.start_button.isEnabled())
 
     def test_demo_window_is_marked_and_runs_on_fake_devices(self) -> None:
         window = demo.demo_window(self.store, Path(self.temporary.name, "runs-demo"))

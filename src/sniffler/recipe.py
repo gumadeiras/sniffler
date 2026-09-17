@@ -3,6 +3,7 @@
 import json
 import math
 import random
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -218,6 +219,11 @@ def duration_problem(value: object) -> str | None:
     return None
 
 
+def _toml_key(name: str) -> str:
+    """Quote a table key the way lab.toml needs it when it is not a bare key."""
+    return name if re.fullmatch(r"[A-Za-z0-9_-]+", name) else json.dumps(name)
+
+
 def _step_problems(step: Step, rig: RigMap, location: str, shutdown: bool) -> list[str]:
     problems: list[str] = []
     if shutdown:
@@ -235,7 +241,9 @@ def _step_problems(step: Step, rig: RigMap, location: str, shutdown: bool) -> li
             problems.append(f"{location}: valve {name!r} must be open or closed.")
 
     for name in sorted(step.setpoints.keys() - rig.mfcs.keys()):
-        problems.append(f"{location}: unknown MFC {name!r}. Add it to [alicat.{name}] in lab.toml.")
+        problems.append(
+            f"{location}: unknown MFC {name!r}. Add it to [alicat.{_toml_key(name)}] in lab.toml."
+        )
     for name in sorted(rig.mfcs.keys() - step.setpoints.keys()):
         problems.append(f"{location}: MFC {name!r} has no target flow.")
     for name, value in step.setpoints.items():
