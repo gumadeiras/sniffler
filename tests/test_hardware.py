@@ -13,6 +13,8 @@ from sniffler.hardware import (
     DeviceError,
     alicat_status,
     digital_channel_name,
+    open_alicat,
+    open_labjack,
     read_labjack_analog,
     set_alicat_flow,
     set_labjack_digital,
@@ -29,12 +31,14 @@ class FakeU3:
         self.digital_write: tuple[int, int] | None = None
         self.analog_mask = 0b00001111
         self.eio_analog_mask = 0b00000001
+        self.config_reads = 0
         self.instances.append(self)
 
     def getCalibrationData(self) -> None:
         self.calibrated = True
 
     def configU3(self) -> dict[str, int]:
+        self.config_reads += 1
         return {"FIOAnalog": self.analog_mask, "EIOAnalog": self.eio_analog_mask}
 
     def getAIN(self, channel: int) -> float:
@@ -101,6 +105,28 @@ class LabJackTests(unittest.TestCase):
         self.assertEqual(digital_channel_name(8), "EIO0")
         self.assertEqual(digital_channel_name(15), "EIO7")
         self.assertEqual(digital_channel_name(19), "CIO3")
+
+    def test_one_session_serves_many_commands_on_a_single_connection(self) -> None:
+        with patch.dict(sys.modules, {"u3": self.u3_module}), open_labjack() as session:
+            session.set_digital(9, True)
+            session.set_digital(10, True)
+            session.set_digital(9, False)
+
+        self.assertEqual(len(FakeU3.instances), 1)
+        device = FakeU3.instances[0]
+        self.assertEqual(device.digital_write, (9, 0))
+        self.assertEqual(device.config_reads, 1)
+        self.assertTrue(device.closed)
+
+    def test_session_closes_the_connection_when_a_command_fails(self) -> None:
+        with (
+            patch.dict(sys.modules, {"u3": self.u3_module}),
+            self.assertRaisesRegex(DeviceError, "configured as analog"),
+            open_labjack() as session,
+        ):
+            session.set_digital(8, True)
+
+        self.assertTrue(FakeU3.instances[0].closed)
 
 
 class MassFlowClient(MockAlicatClient):
@@ -278,6 +304,23 @@ class AlicatTests(unittest.IsolatedAsyncioTestCase):
             await set_alicat_flow("/dev/mock", 1.0)
 
         self.assertEqual(clients[0].state["setpoint"], 1.0)
+
+    async def test_one_session_serves_many_alicat_commands(self) -> None:
+        clients: list[MassFlowClient] = []
+
+        def client(address: str, **_options):
+            controller = MassFlowClient(address)
+            clients.append(controller)
+            return controller
+
+        with patch("alicat.driver.SerialClient", side_effect=client):
+            async with open_alicat("/dev/mock") as session:
+                state = await session.status()
+                applied = await session.set_flow(1.0)
+
+        self.assertEqual(len(clients), 1)
+        self.assertEqual(state["control_point"], "mass flow")
+        self.assertEqual(applied, (1.0, "SCCM"))
 
     async def test_rejects_nonfinite_flow_before_opening_a_connection(self) -> None:
         with (

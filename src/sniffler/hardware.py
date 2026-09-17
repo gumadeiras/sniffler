@@ -75,8 +75,84 @@ def list_serial_ports() -> list[tuple[str, str]]:
         raise DeviceError(f"Cannot list serial ports: {error}") from error
 
 
+def digital_channel_name(channel: int) -> str:
+    """Return the U3 line name for a unified digital channel number."""
+    if channel < 8:
+        return f"FIO{channel}"
+    if channel < 16:
+        return f"EIO{channel - 8}"
+    return f"CIO{channel - 16}"
+
+
+class LabJackSession:
+    """An open U3 connection that serves repeated commands.
+
+    The device configuration is read once, when the session opens. Change the
+    U3 configuration outside a session.
+    """
+
+    def __init__(self, device: Any) -> None:
+        self._device = device
+        try:
+            self._configuration = device.configU3()
+        except Exception as error:
+            raise DeviceError(f"Cannot read the LabJack U3 configuration: {error}") from error
+
+    def status(self) -> dict[str, object]:
+        """Return the device identity and the FIO channel configuration."""
+        analog_mask = int(self._configuration.get("FIOAnalog", 0))
+        analog_channels = [str(channel) for channel in range(8) if analog_mask & (1 << channel)]
+        digital_channels = [
+            str(channel) for channel in range(8) if not analog_mask & (1 << channel)
+        ]
+        return {
+            "serial_number": self._configuration.get("SerialNumber"),
+            "local_id": self._configuration.get("LocalID"),
+            "hardware_version": self._configuration.get("HardwareVersion"),
+            "firmware_version": self._configuration.get("FirmwareVersion"),
+            "analog_fio_channels": ", ".join(analog_channels) or "none",
+            "digital_fio_channels": ", ".join(digital_channels) or "none",
+        }
+
+    def read_analog(self, channel: int) -> float:
+        """Read an input that is configured as analog."""
+        try:
+            if not int(self._configuration.get("FIOAnalog", 0)) & (1 << channel):
+                raise DeviceError(f"FIO{channel} is not configured as an analog input.")
+            return float(self._device.getAIN(channel))
+        except DeviceError:
+            raise
+        except Exception as error:
+            raise DeviceError(f"Cannot read LabJack AIN{channel}: {error}") from error
+
+    def set_digital(self, channel: int, state: bool) -> bool:
+        """Set a line that is configured as digital and read back its state."""
+        name = digital_channel_name(channel)
+        is_analog = False
+        if channel < 8:
+            is_analog = bool(int(self._configuration.get("FIOAnalog", 0)) & (1 << channel))
+        elif channel < 16:
+            is_analog = bool(int(self._configuration.get("EIOAnalog", 0)) & (1 << (channel - 8)))
+        if is_analog:
+            raise DeviceError(f"{name} is configured as analog; no output was changed.")
+
+        try:
+            self._device.setDOState(channel, int(state))
+        except Exception as error:
+            raise DeviceError(
+                f"Cannot confirm the {name} write; the output might have changed: {error}"
+            ) from error
+        try:
+            return bool(self._device.getDIOState(channel))
+        except Exception as error:
+            raise DeviceError(
+                f"{name} was written, but its reported state cannot be read: {error}"
+            ) from error
+
+
 @contextmanager
-def _open_labjack(serial_number: int | None) -> Iterator[Any]:
+def open_labjack(serial_number: int | None = None) -> Iterator[LabJackSession]:
+    """Open a U3 and keep it open for the whole block."""
     device = None
     try:
         import u3
@@ -91,7 +167,7 @@ def _open_labjack(serial_number: int | None) -> Iterator[Any]:
         raise DeviceError(f"Cannot connect to the LabJack U3: {error}") from error
 
     try:
-        yield device
+        yield LabJackSession(device)
     finally:
         closing_during_error = sys.exc_info()[0] is not None
         try:
@@ -103,139 +179,47 @@ def _open_labjack(serial_number: int | None) -> Iterator[Any]:
 
 def labjack_status(serial_number: int | None = None) -> dict[str, object]:
     """Connect to a U3 and return its identity."""
-    with _open_labjack(serial_number) as device:
-        try:
-            configuration = device.configU3()
-        except Exception as error:
-            raise DeviceError(f"Cannot read the LabJack U3 configuration: {error}") from error
-        analog_mask = int(configuration.get("FIOAnalog", 0))
-        analog_channels = [str(channel) for channel in range(8) if analog_mask & (1 << channel)]
-        digital_channels = [
-            str(channel) for channel in range(8) if not analog_mask & (1 << channel)
-        ]
-        return {
-            "serial_number": configuration.get("SerialNumber"),
-            "local_id": configuration.get("LocalID"),
-            "hardware_version": configuration.get("HardwareVersion"),
-            "firmware_version": configuration.get("FirmwareVersion"),
-            "analog_fio_channels": ", ".join(analog_channels) or "none",
-            "digital_fio_channels": ", ".join(digital_channels) or "none",
-        }
+    with open_labjack(serial_number) as session:
+        return session.status()
 
 
 def read_labjack_analog(channel: int, serial_number: int | None = None) -> float:
     """Read a U3 input that is configured as analog."""
-    with _open_labjack(serial_number) as device:
-        try:
-            analog_mask = int(device.configU3().get("FIOAnalog", 0))
-            if not analog_mask & (1 << channel):
-                raise DeviceError(f"FIO{channel} is not configured as an analog input.")
-            return float(device.getAIN(channel))
-        except DeviceError:
-            raise
-        except Exception as error:
-            raise DeviceError(f"Cannot read LabJack AIN{channel}: {error}") from error
-
-
-def digital_channel_name(channel: int) -> str:
-    """Return the U3 line name for a unified digital channel number."""
-    if channel < 8:
-        return f"FIO{channel}"
-    if channel < 16:
-        return f"EIO{channel - 8}"
-    return f"CIO{channel - 16}"
+    with open_labjack(serial_number) as session:
+        return session.read_analog(channel)
 
 
 def set_labjack_digital(channel: int, state: bool, serial_number: int | None = None) -> bool:
     """Set and read a U3 line that is configured as digital."""
-    name = digital_channel_name(channel)
-    with _open_labjack(serial_number) as device:
+    with open_labjack(serial_number) as session:
+        return session.set_digital(channel, state)
+
+
+class AlicatSession:
+    """An open Alicat connection that serves repeated commands."""
+
+    def __init__(self, controller: Any) -> None:
+        self._controller = controller
+
+    async def status(self) -> dict[str, object]:
+        """Read the current state."""
         try:
-            configuration = device.configU3()
-        except Exception as error:
-            raise DeviceError(f"Cannot read the LabJack U3 configuration: {error}") from error
-        is_analog = False
-        if channel < 8:
-            is_analog = bool(int(configuration.get("FIOAnalog", 0)) & (1 << channel))
-        elif channel < 16:
-            is_analog = bool(int(configuration.get("EIOAnalog", 0)) & (1 << (channel - 8)))
-        if is_analog:
-            raise DeviceError(f"{name} is configured as analog; no output was changed.")
-
-        try:
-            device.setDOState(channel, int(state))
-        except Exception as error:
-            raise DeviceError(
-                f"Cannot confirm the {name} write; the output might have changed: {error}"
-            ) from error
-        try:
-            return bool(device.getDIOState(channel))
-        except Exception as error:
-            raise DeviceError(
-                f"{name} was written, but its reported state cannot be read: {error}"
-            ) from error
-
-
-@asynccontextmanager
-async def _open_alicat(
-    port: str, unit: str, baud_rate: int, timeout_seconds: float
-) -> AsyncIterator[Any]:
-    controller = None
-    try:
-        from alicat.driver import FlowController
-
-        controller = FlowController(
-            address=port,
-            unit=unit,
-            baudrate=baud_rate,
-            timeout=timeout_seconds,
-        )
-    except Exception as error:
-        raise DeviceError(f"Cannot open the Alicat MFC: {error}") from error
-
-    try:
-        yield controller
-    finally:
-        closing_during_error = sys.exc_info()[0] is not None
-        try:
-            await controller.close()
-        except Exception as error:
-            if not closing_during_error:
-                raise DeviceError(f"Cannot close the Alicat MFC: {error}") from error
-
-
-async def alicat_status(
-    port: str,
-    unit: str = "A",
-    baud_rate: int = 19200,
-    timeout_seconds: float = 0.15,
-) -> dict[str, object]:
-    """Read the current Alicat state."""
-    async with _open_alicat(port, unit, baud_rate, timeout_seconds) as controller:
-        try:
-            state = await controller.get()
+            state = await self._controller.get()
         except Exception as error:
             raise DeviceError(f"Cannot read the Alicat MFC: {error}") from error
         try:
-            source = await _read_alicat_setpoint_source(controller)
+            source = await _read_alicat_setpoint_source(self._controller)
         except DeviceError:
             state["setpoint_source"] = "unavailable"
         else:
             state["setpoint_source"] = _ALICAT_SETPOINT_SOURCES[source]
         return state
 
+    async def set_flow(self, flow_rate: float) -> tuple[float, str | None]:
+        """Set and verify the mass-flow setpoint."""
+        applied_flow = normalize_alicat_flow(flow_rate)
+        controller = self._controller
 
-async def set_alicat_flow(
-    port: str,
-    flow_rate: float,
-    unit: str = "A",
-    baud_rate: int = 19200,
-    timeout_seconds: float = 0.15,
-) -> tuple[float, str | None]:
-    """Set and verify the Alicat mass-flow setpoint."""
-    applied_flow = normalize_alicat_flow(flow_rate)
-
-    async with _open_alicat(port, unit, baud_rate, timeout_seconds) as controller:
         try:
             state = await controller.get()
         except Exception as error:
@@ -280,3 +264,59 @@ async def set_alicat_flow(
                 f"the setpoint might have changed: {error}"
             ) from error
         return applied_flow, flow_unit
+
+
+@asynccontextmanager
+async def open_alicat(
+    port: str,
+    unit: str = "A",
+    baud_rate: int = 19200,
+    timeout_seconds: float = 0.15,
+) -> AsyncIterator[AlicatSession]:
+    """Open an Alicat MFC and keep it open for the whole block."""
+    controller = None
+    try:
+        from alicat.driver import FlowController
+
+        controller = FlowController(
+            address=port,
+            unit=unit,
+            baudrate=baud_rate,
+            timeout=timeout_seconds,
+        )
+    except Exception as error:
+        raise DeviceError(f"Cannot open the Alicat MFC: {error}") from error
+
+    try:
+        yield AlicatSession(controller)
+    finally:
+        closing_during_error = sys.exc_info()[0] is not None
+        try:
+            await controller.close()
+        except Exception as error:
+            if not closing_during_error:
+                raise DeviceError(f"Cannot close the Alicat MFC: {error}") from error
+
+
+async def alicat_status(
+    port: str,
+    unit: str = "A",
+    baud_rate: int = 19200,
+    timeout_seconds: float = 0.15,
+) -> dict[str, object]:
+    """Read the current Alicat state."""
+    async with open_alicat(port, unit, baud_rate, timeout_seconds) as session:
+        return await session.status()
+
+
+async def set_alicat_flow(
+    port: str,
+    flow_rate: float,
+    unit: str = "A",
+    baud_rate: int = 19200,
+    timeout_seconds: float = 0.15,
+) -> tuple[float, str | None]:
+    """Set and verify the Alicat mass-flow setpoint."""
+    applied_flow = normalize_alicat_flow(flow_rate)
+    async with open_alicat(port, unit, baud_rate, timeout_seconds) as session:
+        return await session.set_flow(applied_flow)
