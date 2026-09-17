@@ -9,7 +9,8 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import Qt
+    from PySide6.QtCore import QEvent, QPointF, QSettings, Qt
+    from PySide6.QtGui import QMouseEvent
     from PySide6.QtWidgets import QApplication, QMessageBox
 except ImportError as error:  # pragma: no cover - depends on the platform libraries
     QApplication = None  # type: ignore[assignment]
@@ -204,6 +205,112 @@ class RecipeEditorTests(GuiTestCase):
         self.assertEqual(editor._steps.steps()[2].duration_seconds, 0.25)
 
 
+class EditingTests(GuiTestCase):
+    def test_remove_trial_asks_first_and_names_the_scope(self) -> None:
+        from sniffler.gui.recipe_editor import RecipeEditor
+
+        editor = RecipeEditor(RIG)
+        editor.set_recipe(make_recipe(0.5))
+        asked: list[str] = []
+
+        def decline(_parent, _title, text, *_rest):
+            asked.append(text)
+            return QMessageBox.No
+
+        editor._confirm = decline
+        editor._trial_list.setCurrentRow(0)
+        editor._on_remove_trial()
+        self.assertEqual([trial.name for trial in editor.recipe().trials], ["odor", "blank"])
+        self.assertIn("'odor' and its 2 steps", asked[0])
+
+        editor._confirm = lambda *_arguments: QMessageBox.Yes
+        editor._on_remove_trial()
+        self.assertEqual([trial.name for trial in editor.recipe().trials], ["blank"])
+
+    def test_trial_names_edit_in_place_and_reject_duplicates(self) -> None:
+        from sniffler.gui.recipe_editor import RecipeEditor
+
+        editor = RecipeEditor(RIG)
+        editor.set_recipe(make_recipe(0.5))
+        item = editor._trial_list.item(1)
+        self.assertTrue(item.flags() & Qt.ItemIsEditable)
+
+        item.setText("control")
+        self.assertEqual([trial.name for trial in editor.recipe().trials], ["odor", "control"])
+        self.assertEqual(editor.recipe().schedule.counts, {"odor": 2, "control": 2})
+
+        editor._trial_list.item(1).setText("odor")
+        self.assertEqual([trial.name for trial in editor.recipe().trials], ["odor", "control"])
+        self.assertEqual(editor._trial_list.item(1).text(), "control")
+        self.assertIn("already used", editor._problems.text())
+
+    def test_one_click_anywhere_in_a_valve_cell_toggles_it(self) -> None:
+        from sniffler.gui.recipe_editor import RecipeEditor
+
+        editor = RecipeEditor(RIG)
+        editor.set_recipe(make_recipe(0.5))
+        editor.resize(1200, 700)
+        editor.show()
+        self.process_events()
+        view = editor._step_view
+        model = editor._steps
+        index = model.index(1, 1)  # odor-1 in step 2, closed
+        self.assertEqual(model.data(index, Qt.CheckStateRole), Qt.Unchecked)
+        rect = view.visualRect(index)
+        point = QPointF(rect.right() - 4, rect.center().y())  # far from the check box
+
+        for event_type in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease):
+            event = QMouseEvent(
+                event_type,
+                point,
+                view.viewport().mapToGlobal(point.toPoint()),
+                Qt.LeftButton,
+                Qt.LeftButton,
+                Qt.NoModifier,
+            )
+            QApplication.sendEvent(view.viewport(), event)
+        self.assertEqual(model.data(index, Qt.CheckStateRole), Qt.Checked)
+        self.assertTrue(editor.recipe().trials[0].steps[1].valves["odor-1"])
+        editor.close()
+
+    def test_seed_field_accepts_digits_only(self) -> None:
+        from PySide6.QtTest import QTest
+
+        from sniffler.gui.recipe_editor import RecipeEditor
+
+        editor = RecipeEditor(RIG)
+        QTest.keyClicks(editor._seed, "12ab3")
+
+        self.assertEqual(editor._seed.text(), "123")
+        self.assertEqual(editor.recipe().schedule.seed, 123)
+        editor._seed.clear()
+        self.assertIsNone(editor.recipe().schedule.seed)
+
+    def test_add_step_opens_the_duration_for_typing(self) -> None:
+        from sniffler.gui.recipe_editor import RecipeEditor
+
+        editor = RecipeEditor(RIG)
+        editor.show()
+        self.process_events()
+        editor._on_add_step()
+
+        view = editor._step_view
+        self.assertEqual(view.currentIndex().row(), 1)
+        self.assertEqual(view.currentIndex().column(), 0)
+        self.assertEqual(view.state(), view.State.EditingState)
+        editor.close()
+
+    def test_deviation_indicator_says_it_in_words(self) -> None:
+        from sniffler.executor import Sample
+        from sniffler.gui.run_view import MfcPlot
+
+        plot = MfcPlot(RIG)
+        plot.add_sample(Sample("mfc-500", 1.0, 100.0, 100.0, 99.0, "t"))
+        self.assertIn("within limit", plot._labels["mfc-500"].text())
+        plot.add_sample(Sample("mfc-500", 2.0, 100.0, 100.0, 60.0, "t"))
+        self.assertIn("HIGH deviation", plot._labels["mfc-500"].text())
+
+
 class MainWindowTests(GuiTestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -219,11 +326,18 @@ class MainWindowTests(GuiTestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    def store(self) -> "QSettings":
+        return QSettings(str(Path(self.temporary.name, "gui.ini")), QSettings.IniFormat)
+
     def window(self, answer=QMessageBox.Yes):
         from sniffler.gui.app import MainWindow
 
         window = MainWindow(
-            self.settings, RIG, open_labjack=self.rig.open_labjack, open_alicat=self.rig.open_alicat
+            self.settings,
+            RIG,
+            open_labjack=self.rig.open_labjack,
+            open_alicat=self.rig.open_alicat,
+            store=self.store(),
         )
         window._ask = lambda *_arguments, **_options: answer
         window.warnings = []
@@ -308,6 +422,38 @@ class MainWindowTests(GuiTestCase):
 
         self.assertFalse((self.runs / LOCK_FILE_NAME).exists())
         self.assertIn("Lock file removed", window.statusBar().currentMessage())
+
+    def test_new_recipe_asks_about_unsaved_edits(self) -> None:
+        window = self.window(answer=QMessageBox.Cancel)
+        window.editor._name.setText("draft")
+        self.assertTrue(window.isWindowModified())
+        self.assertIn("unsaved recipe", window.windowTitle())
+
+        window.new_recipe()
+        self.assertEqual(window.editor.recipe().name, "draft", "Cancel keeps the edits")
+
+        window._ask = lambda *_arguments, **_options: QMessageBox.Discard
+        window.new_recipe()
+        self.assertEqual(window.editor.recipe().name, "")
+        self.assertFalse(window.isWindowModified())
+
+    def test_save_clears_the_modified_state_and_restores_on_next_start(self) -> None:
+        path = Path(self.temporary.name, "pulses.json")
+        window = self.window()
+        window.editor.set_recipe(make_recipe(0.5))
+        window.save_recipe_file(path)
+        self.assertFalse(window.isWindowModified())
+        self.assertEqual(window.windowTitle(), "pulses.json[*] - sniffler")
+
+        again = self.window()
+        self.assertEqual(again.editor.recipe(), make_recipe(0.5))
+        self.assertFalse(again.isWindowModified())
+        again.editor._name.setText("changed")
+        self.assertTrue(again.isWindowModified())
+        again.apply_device_limits({"mfc-500": (500.0, "SCCM")})
+        self.assertTrue(again.isWindowModified(), "device limits do not change the dirty state")
+        window.editor.set_recipe(None)
+        window.apply_device_limits({"mfc-500": (500.0, "SCCM")})
 
     def test_device_limits_apply_to_the_editor_and_the_rig_panel(self) -> None:
         window = self.window()

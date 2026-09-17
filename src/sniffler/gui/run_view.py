@@ -8,7 +8,7 @@ from typing import Any
 
 import pyqtgraph as pg
 from PySide6.QtCore import QObject, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPen
+from PySide6.QtGui import QColor, QFontDatabase, QPainter, QPaintEvent, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFormLayout,
@@ -236,6 +236,7 @@ class MfcPlot(QWidget):
             )
             self._history[name] = deque(maxlen=PLOT_POINTS)
             label = QLabel(f"{name}: no reading yet")
+            label.setWordWrap(True)
             self._labels[name] = label
             labels.addWidget(label)
         layout = QVBoxLayout(self)
@@ -279,14 +280,13 @@ class MfcPlot(QWidget):
         deviation = sample.mass_flow - sample.commanded_setpoint
         reference = mfc.full_scale or mfc.maximum_flow or abs(sample.commanded_setpoint) or 1.0
         limit = max(DEVIATION_FRACTION * reference, 0.01)
+        high = abs(deviation) > limit
+        verdict = f"HIGH deviation, more than {limit:.2f}" if high else "within limit"
         label.setText(
             f"{sample.mfc}: commanded {sample.commanded_setpoint:.2f}, "
-            f"actual {sample.mass_flow:.2f} {unit}, deviation {deviation:+.2f} {unit}"
+            f"actual {sample.mass_flow:.2f} {unit}, deviation {deviation:+.2f} {unit}: {verdict}"
         )
-        if abs(deviation) > limit:
-            label.setStyleSheet("color: #9b1c1c; font-weight: bold;")
-        else:
-            label.setStyleSheet("color: #1c7a3a;")
+        label.setStyleSheet("color: #9b1c1c; font-weight: bold;" if high else "color: #1c7a3a;")
 
 
 class StatusPanel(QWidget):
@@ -302,6 +302,8 @@ class StatusPanel(QWidget):
         self._message.setWordWrap(True)
         self._trial = QLabel("—")
         self._time = QLabel("—")
+        time_font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+        self._time.setFont(time_font)
         self._directory = QLabel("—")
         self._directory.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self._valves = QLabel("—")

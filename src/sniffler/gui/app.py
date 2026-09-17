@@ -9,7 +9,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -61,6 +61,7 @@ class RigPanel(QWidget):
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._table.setWordWrap(True)
         self.read_limits = QPushButton("Read device limits")
         self.read_limits.setToolTip(
             "Read the full scale of every MFC. This command changes no output."
@@ -103,6 +104,7 @@ class RigPanel(QWidget):
         for row, values in enumerate(rows):
             for column, value in enumerate(values):
                 self._table.setItem(row, column, QTableWidgetItem(value))
+        self._table.resizeRowsToContents()
 
 
 class MainWindow(QMainWindow):
@@ -116,16 +118,18 @@ class MainWindow(QMainWindow):
         open_labjack: Callable[..., Any] = hardware.open_labjack,
         open_alicat: Callable[..., Any] = hardware.open_alicat,
         read_full_scale: Callable[..., Any] = hardware.alicat_full_scale,
+        store: QSettings | None = None,
     ) -> None:
         super().__init__()
-        self.setWindowTitle("sniffler")
         self.resize(1280, 860)
         self._settings = settings
         self._rig = rig
         self._factories = {"open_labjack": open_labjack, "open_alicat": open_alicat}
         self._read_full_scale = read_full_scale
+        self._store = store if store is not None else QSettings("sniffler", "sniffler-gui")
         self._recipe_path: Path | None = None
         self._running_recipe: Recipe | None = None
+        self._dirty = False
         self._ask = QMessageBox.question
         self._tell = QMessageBox.warning
 
@@ -154,10 +158,12 @@ class MainWindow(QMainWindow):
         self._connect()
         self._refresh_summary()
         self._set_running(False)
+        self._refresh_title()
         self.statusBar().showMessage(f"Runs are written to {settings.runs_directory}")
         self._tick = QTimer(self)
         self._tick.setInterval(100)
         self._tick.timeout.connect(self._on_tick)
+        self._restore_session()
         QTimer.singleShot(0, self.check_stale_lock)
 
     # Layout ------------------------------------------------------------
@@ -207,7 +213,7 @@ class MainWindow(QMainWindow):
         menu.addAction(quit_action)
 
     def _connect(self) -> None:
-        self.editor.changed.connect(self._refresh_summary)
+        self.editor.changed.connect(self._on_recipe_edited)
         self.start_button.clicked.connect(self.start_run)
         self.stop_button.clicked.connect(self.controller.request_stop)
         self.abort_button.clicked.connect(self.controller.abort)
@@ -218,11 +224,59 @@ class MainWindow(QMainWindow):
 
     # Recipe files ------------------------------------------------------
 
+    def _on_recipe_edited(self) -> None:
+        self._dirty = True
+        self._refresh_title()
+        self._refresh_summary()
+
+    def _mark_clean(self, path: Path | None) -> None:
+        self._recipe_path = path
+        self._dirty = False
+        self._refresh_title()
+        if path is not None:
+            self._store.setValue("last_recipe", str(path))
+
+    def _refresh_title(self) -> None:
+        name = self._recipe_path.name if self._recipe_path is not None else "unsaved recipe"
+        self.setWindowTitle(f"{name}[*] - sniffler")
+        self.setWindowModified(self._dirty)
+
+    def _restore_session(self) -> None:
+        geometry = self._store.value("geometry")
+        if geometry is not None:
+            self.restoreGeometry(geometry)
+        last = self._store.value("last_recipe")
+        if last and Path(str(last)).exists():
+            self.load_recipe_file(Path(str(last)))
+
+    def offer_to_save(self) -> bool:
+        """Ask about unsaved edits. Return False when the operator cancels."""
+        if not self._dirty:
+            return True
+        name = self._recipe_path.name if self._recipe_path is not None else "this recipe"
+        answer = self._ask(
+            self,
+            "Unsaved changes",
+            f"Save the changes to {name} first?",
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+            QMessageBox.Save,
+        )
+        if answer == QMessageBox.Cancel:
+            return False
+        if answer == QMessageBox.Save:
+            self.save_recipe()
+            return not self._dirty
+        return True
+
     def new_recipe(self) -> None:
+        if not self.offer_to_save():
+            return
         self.editor.set_recipe(None)
-        self._recipe_path = None
+        self._mark_clean(None)
 
     def open_recipe(self) -> None:
+        if not self.offer_to_save():
+            return
         path_text, _filter = QFileDialog.getOpenFileName(self, "Open recipe", "", RECIPE_FILTER)
         if path_text:
             self.load_recipe_file(Path(path_text))
@@ -234,7 +288,7 @@ class MainWindow(QMainWindow):
             self._tell(self, "Cannot open the recipe", str(error))
             return
         self.editor.set_recipe(recipe)
-        self._recipe_path = path
+        self._mark_clean(path)
         self.statusBar().showMessage(f"Opened {path}")
 
     def save_recipe(self) -> None:
@@ -244,7 +298,10 @@ class MainWindow(QMainWindow):
             self.save_recipe_file(self._recipe_path)
 
     def save_recipe_as(self) -> None:
-        path_text, _filter = QFileDialog.getSaveFileName(self, "Save recipe", "", RECIPE_FILTER)
+        start = str(
+            self._recipe_path or Path(self.editor.recipe().name or "recipe").with_suffix(".json")
+        )
+        path_text, _filter = QFileDialog.getSaveFileName(self, "Save recipe", start, RECIPE_FILTER)
         if path_text:
             path = Path(path_text)
             if path.suffix != ".json":
@@ -257,7 +314,7 @@ class MainWindow(QMainWindow):
         except RecipeError as error:
             self._tell(self, "Cannot save the recipe", str(error))
             return
-        self._recipe_path = path
+        self._mark_clean(path)
         self.statusBar().showMessage(f"Saved {path}")
 
     # Rig ---------------------------------------------------------------
@@ -308,9 +365,13 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Device full scales read and applied to the editor.")
 
     def set_rig(self, rig: RigMap) -> None:
+        """Apply a new rig map. Device limits do not count as recipe edits."""
+        dirty = self._dirty
         self._rig = rig
         self.editor.set_rig(rig)
         self.rig_panel.show_rig(rig)
+        self._dirty = dirty
+        self._refresh_title()
 
     # Runs --------------------------------------------------------------
 
@@ -414,28 +475,34 @@ class MainWindow(QMainWindow):
             "A previous run did not end normally",
             f"The lock file names {directory}.\nNo run is active in this window. "
             "Remove the lock file so that new runs can start?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
         )
         if answer == QMessageBox.Yes:
             (runs_directory / LOCK_FILE_NAME).unlink(missing_ok=True)
             self.statusBar().showMessage("Lock file removed.")
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        if not self.controller.is_running:
-            event.accept()
-            return
-        answer = self._ask(
-            self,
-            "A run is active",
-            "Abort the run now and close? The safe state is applied: "
-            "all valves closed, every MFC setpoint zero.",
-        )
-        if answer != QMessageBox.Yes:
+        if self.controller.is_running:
+            answer = self._ask(
+                self,
+                "A run is active",
+                "Abort the run now and close? The safe state is applied: "
+                "all valves closed, every MFC setpoint zero.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                event.ignore()
+                return
+            status = self.controller.abort_and_wait()
+            self._tick.stop()
+            if status is not None and status.phase == Phase.FAILED:
+                self._tell(self, "The safe state might not be complete", status.message)
+        if not self.offer_to_save():
             event.ignore()
             return
-        status = self.controller.abort_and_wait()
-        self._tick.stop()
-        if status is not None and status.phase == Phase.FAILED:
-            self._tell(self, "The safe state might not be complete", status.message)
+        self._store.setValue("geometry", self.saveGeometry())
         event.accept()
 
 

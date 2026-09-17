@@ -1,6 +1,7 @@
 """The recipe editor: trials, steps, schedule, and the shutdown state."""
 
 from PySide6.QtCore import QSignalBlocker, Qt, Signal
+from PySide6.QtGui import QIntValidator
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -8,7 +9,6 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from sniffler.gui.pulse_dialog import PulseTrainDialog
-from sniffler.gui.step_table import NumberDelegate, StepRow, StepTableModel
+from sniffler.gui.step_table import StepDelegate, StepRow, StepTableModel
 from sniffler.recipe import ORDERINGS, Recipe, RigMap, Schedule, Step, Trial, recipe_problems
 
 
@@ -40,7 +40,7 @@ class _TrialData:
 def _step_view(model: StepTableModel) -> QTableView:
     view = QTableView()
     view.setModel(model)
-    view.setItemDelegate(NumberDelegate(view))
+    view.setItemDelegate(StepDelegate(view))
     view.setSelectionBehavior(QAbstractItemView.SelectRows)
     view.setSelectionMode(QAbstractItemView.SingleSelection)
     view.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -88,7 +88,9 @@ class RecipeEditor(QWidget):
         self._ordering = QComboBox()
         self._ordering.addItems(ORDERINGS)
         self._seed = QLineEdit()
+        self._seed.setValidator(QIntValidator(0, 2_000_000_000, self._seed))
         self._seed.setPlaceholderText("empty = new random seed for each run")
+        self._confirm = QMessageBox.question
 
         self._shutdown = StepTableModel(rig, with_duration=False, parent=self)
         self._shutdown.set_rows([self._shutdown.blank_row()])
@@ -176,6 +178,7 @@ class RecipeEditor(QWidget):
         self._name.textChanged.connect(self._emit_changed)
         self._notes.textChanged.connect(self._emit_changed)
         self._trial_list.currentRowChanged.connect(self._select_trial)
+        self._trial_list.itemChanged.connect(self._on_trial_item_edited)
         self._add_trial.clicked.connect(self._on_add_trial)
         self._remove_trial.clicked.connect(self._on_remove_trial)
         self._rename_trial.clicked.connect(self._on_rename_trial)
@@ -252,11 +255,7 @@ class RecipeEditor(QWidget):
             for trial in self._trials
         )
         seed_text = self._seed.text().strip()
-        seed: int | None
-        try:
-            seed = int(seed_text) if seed_text else None
-        except ValueError:
-            seed = -1
+        seed = int(seed_text) if seed_text.isdigit() else None
         schedule = Schedule(
             counts={trial.name: trial.count for trial in self._trials},
             ordering=self._ordering.currentText(),
@@ -274,10 +273,7 @@ class RecipeEditor(QWidget):
 
     def problems(self) -> list[str]:
         """Return every problem that stops this recipe from running."""
-        found = recipe_problems(self.recipe(), self._rig)
-        if self._seed.text().strip() and not self._seed.text().strip().isdigit():
-            found.append("Schedule: the seed must be a whole number or empty.")
-        return found
+        return recipe_problems(self.recipe(), self._rig)
 
     # Trials ------------------------------------------------------------
 
@@ -290,7 +286,9 @@ class RecipeEditor(QWidget):
             current = self._trial_list.currentRow()
             self._trial_list.clear()
             for trial in self._trials:
-                self._trial_list.addItem(QListWidgetItem(trial.name))
+                item = QListWidgetItem(trial.name)
+                item.setFlags(item.flags() | Qt.ItemIsEditable)
+                self._trial_list.addItem(item)
             if 0 <= current < len(self._trials):
                 self._trial_list.setCurrentRow(current)
         self._refresh_schedule()
@@ -349,6 +347,19 @@ class RecipeEditor(QWidget):
         index = self._trial_list.currentRow()
         if not (0 <= index < len(self._trials)):
             return
+        self._store_current_rows()
+        trial = self._trials[index]
+        steps = len(trial.rows)
+        answer = self._confirm(
+            self,
+            "Remove trial",
+            f"Remove the trial {trial.name!r} and its {steps} step{'s' if steps != 1 else ''}? "
+            "This cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
         self._current = None
         del self._trials[index]
         self._refresh_trial_list()
@@ -357,24 +368,28 @@ class RecipeEditor(QWidget):
         self._emit_changed()
 
     def _on_rename_trial(self) -> None:
-        index = self._trial_list.currentRow()
-        if not (0 <= index < len(self._trials)):
-            return
-        name, accepted = QInputDialog.getText(
-            self, "Rename trial", "Trial name", text=self._trials[index].name
-        )
-        if accepted:
-            self.rename_trial(index, name)
+        item = self._trial_list.currentItem()
+        if item is not None:
+            self._trial_list.editItem(item)
+
+    def _on_trial_item_edited(self, item: QListWidgetItem) -> None:
+        index = self._trial_list.row(item)
+        if 0 <= index < len(self._trials) and item.text() != self._trials[index].name:
+            self.rename_trial(index, item.text())
 
     def rename_trial(self, index: int, name: str) -> None:
+        """Rename a trial. The old name stays when the new one is empty or already used."""
         name = name.strip()
+        problem = None
         if not name:
-            QMessageBox.warning(self, "Rename trial", "The trial needs a name.")
-            return
-        if any(
+            problem = "The trial needs a name."
+        elif any(
             other.name == name for position, other in enumerate(self._trials) if position != index
         ):
-            QMessageBox.warning(self, "Rename trial", f"The name {name!r} is already used.")
+            problem = f"The name {name!r} is already used."
+        if problem is not None:
+            self._problems.setText(problem)
+            self._refresh_trial_list()
             return
         self._trials[index].name = name
         self._refresh_trial_list()
@@ -404,6 +419,9 @@ class RecipeEditor(QWidget):
         position = self._selected_step() + 1
         self._steps.insert_rows(position, [self._steps.blank_row()])
         self._step_view.selectRow(position)
+        duration = self._steps.index(position, 0)
+        self._step_view.setCurrentIndex(duration)
+        self._step_view.edit(duration)
 
     def _on_remove_step(self) -> None:
         position = self._selected_step()

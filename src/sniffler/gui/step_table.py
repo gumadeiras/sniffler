@@ -2,7 +2,15 @@
 
 from typing import Any
 
-from PySide6.QtCore import QAbstractTableModel, QLocale, QModelIndex, QObject, Qt
+from PySide6.QtCore import (
+    QAbstractItemModel,
+    QAbstractTableModel,
+    QEvent,
+    QLocale,
+    QModelIndex,
+    QObject,
+    Qt,
+)
 from PySide6.QtGui import QBrush, QColor, QDoubleValidator
 from PySide6.QtWidgets import QLineEdit, QStyledItemDelegate, QStyleOptionViewItem, QWidget
 
@@ -238,8 +246,27 @@ def _parse_number(value: Any) -> float | None:
         return None
 
 
-class NumberDelegate(QStyledItemDelegate):
-    """Only accept numbers in duration and setpoint cells."""
+class StepDelegate(QStyledItemDelegate):
+    """Numbers only in duration and setpoint cells; one click anywhere toggles a valve cell."""
+
+    def editorEvent(
+        self,
+        event: QEvent,
+        model: QAbstractItemModel,
+        option: QStyleOptionViewItem,
+        index: QModelIndex,
+    ) -> bool:
+        if isinstance(model, StepTableModel) and model.is_valve_column(index.column()):
+            toggled = (
+                event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton
+            ) or (event.type() == QEvent.KeyPress and event.key() in {Qt.Key_Space, Qt.Key_Select})
+            if toggled:
+                current = model.data(index, Qt.CheckStateRole)
+                target = Qt.Unchecked if current == Qt.Checked else Qt.Checked
+                return model.setData(index, target, Qt.CheckStateRole)
+            if event.type() in {QEvent.MouseButtonPress, QEvent.MouseButtonDblClick}:
+                return True
+        return super().editorEvent(event, model, option, index)
 
     def createEditor(
         self, parent: QWidget, option: QStyleOptionViewItem, index: QModelIndex

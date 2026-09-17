@@ -255,18 +255,22 @@ A recipe has three levels and one primitive:
 - **Shutdown state**: one step with no duration. The executor applies it after
   the last trial or after *Stop after this trial*.
 
-Build the recipe in the *Recipe* tab. Steps are rows in a table. Each cell
-checks its value at once: a duration must be greater than zero, and a setpoint
-must respect `minimum_flow`, `maximum_flow`, and `allow_negative_flow` from
-`lab.toml` and the device full scale. A cell with a problem is red and shows
-the reason in its tooltip. The run cannot start while a problem exists.
+Build the recipe in the *Recipe* tab. Steps are rows in a table. One click
+anywhere in a valve cell opens or closes that valve. Double-click a trial name
+to rename it. Each cell checks its value at once: a duration must be greater
+than zero, and a setpoint must respect `minimum_flow`, `maximum_flow`, and
+`allow_negative_flow` from `lab.toml` and the device full scale. A cell with a
+problem is red and shows the reason in its tooltip. The run cannot start while
+a problem exists.
 
 *Generate pulse train…* creates a train of pulses on one valve. The result is
 ordinary step rows, one for each pulse and one for each gap, and you can edit
 each row.
 
 Recipes are saved as `.json` files from the File menu. The file is a record,
-not an input format: build and edit recipes in the window.
+not an input format: build and edit recipes in the window. The window title
+shows the recipe file and marks unsaved changes; the program asks before it
+discards them. The last saved recipe opens again at the next start.
 
 The ordering `block-randomized` shuffles trials inside blocks that hold one
 trial of each type, so a run that stops early is still balanced. No more than
