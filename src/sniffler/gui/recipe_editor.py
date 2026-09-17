@@ -1,6 +1,8 @@
 """The recipe editor: trials, steps, schedule, and the shutdown state."""
 
-from PySide6.QtCore import QSignalBlocker, Qt, Signal
+from itertools import pairwise
+
+from PySide6.QtCore import QSignalBlocker, QSize, Qt, Signal
 from PySide6.QtGui import QIntValidator
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -21,10 +23,13 @@ from PySide6.QtWidgets import (
     QTableView,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from sniffler.gui import theme
+from sniffler.gui.icons import icon
 from sniffler.gui.pulse_dialog import PulseTrainDialog
 from sniffler.gui.step_table import StepDelegate, StepRow, StepTableModel
 from sniffler.recipe import ORDERINGS, Recipe, RigMap, Schedule, Step, Trial, recipe_problems
@@ -44,9 +49,37 @@ def _step_view(model: StepTableModel) -> QTableView:
     view.setSelectionBehavior(QAbstractItemView.SelectRows)
     view.setSelectionMode(QAbstractItemView.SingleSelection)
     view.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-    view.horizontalHeader().setMinimumSectionSize(90)
-    view.verticalHeader().setDefaultSectionSize(26)
+    view.horizontalHeader().setMinimumSectionSize(7 * theme.UNIT)
+    view.verticalHeader().setDefaultSectionSize(theme.ROW_PX)
     return view
+
+
+def _tool(name: str, text: str) -> QToolButton:
+    """An icon-only button with the command as tooltip and accessible name."""
+    button = QToolButton()
+    button.setIcon(icon(name))
+    button.setIconSize(QSize(theme.ICON_PX, theme.ICON_PX))
+    button.setToolTip(text)
+    button.setAccessibleName(text)
+    button.setAutoRaise(True)
+    button.setFocusPolicy(Qt.StrongFocus)
+    return button
+
+
+def _section(title: str) -> QGroupBox:
+    box = QGroupBox(title)
+    box.setFont(theme.font(bold=True))
+    return box
+
+
+def _button_row(*buttons: QWidget) -> QHBoxLayout:
+    row = QHBoxLayout()
+    row.setSpacing(theme.GAP // 2)
+    for button in buttons:
+        button.setFont(theme.font())
+        row.addWidget(button)
+    row.addStretch(1)
+    return row
 
 
 class RecipeEditor(QWidget):
@@ -61,25 +94,29 @@ class RecipeEditor(QWidget):
         self._current: int | None = None
 
         self._name = QLineEdit()
-        self._name.setPlaceholderText("Recipe name")
+        self._name.setAccessibleName("Recipe name")
         self._notes = QPlainTextEdit()
-        self._notes.setPlaceholderText("Notes about this recipe")
-        self._notes.setMaximumHeight(60)
+        self._notes.setAccessibleName("Recipe notes")
+        self._notes.setMaximumHeight(2 * theme.ROW_PX)
 
         self._trial_list = QListWidget()
-        self._add_trial = QPushButton("Add trial")
-        self._remove_trial = QPushButton("Remove trial")
-        self._rename_trial = QPushButton("Rename trial")
-        self._duplicate_trial = QPushButton("Duplicate trial")
+        self._trial_list.setAccessibleName("Trials")
+        self._add_trial = _tool("add", "Add trial")
+        self._remove_trial = _tool("remove", "Remove trial")
+        self._rename_trial = QPushButton("Rename")
+        self._rename_trial.setToolTip("Rename the selected trial (double-click does the same)")
+        self._duplicate_trial = _tool("duplicate", "Duplicate trial")
 
         self._steps = StepTableModel(rig, with_duration=True, parent=self)
         self._step_view = _step_view(self._steps)
-        self._add_step = QPushButton("Add step")
-        self._remove_step = QPushButton("Remove step")
-        self._duplicate_step = QPushButton("Duplicate step")
-        self._step_up = QPushButton("Move up")
-        self._step_down = QPushButton("Move down")
-        self._pulse_train = QPushButton("Generate pulse train…")
+        self._step_view.setAccessibleName("Steps")
+        self._add_step = _tool("add", "Add step")
+        self._remove_step = _tool("remove", "Remove step")
+        self._duplicate_step = _tool("duplicate", "Duplicate step")
+        self._step_up = _tool("move-up", "Move step up")
+        self._step_down = _tool("move-down", "Move step down")
+        self._pulse_train = QPushButton(icon("pulse-train"), "Pulse train…")
+        self._pulse_train.setToolTip("Insert a train of pulses on one valve as editable steps")
 
         self._schedule = QTableWidget(0, 2)
         self._schedule.setHorizontalHeaderLabels(["Trial", "Count"])
@@ -89,17 +126,20 @@ class RecipeEditor(QWidget):
         self._ordering.addItems(ORDERINGS)
         self._seed = QLineEdit()
         self._seed.setValidator(QIntValidator(0, 2_000_000_000, self._seed))
-        self._seed.setPlaceholderText("empty = new random seed for each run")
+        self._seed.setPlaceholderText("random when empty")
         self._confirm = QMessageBox.question
 
         self._shutdown = StepTableModel(rig, with_duration=False, parent=self)
         self._shutdown.set_rows([self._shutdown.blank_row()])
         self._shutdown_view = _step_view(self._shutdown)
-        self._shutdown_view.setMaximumHeight(90)
+        self._shutdown_view.setMaximumHeight(3 * theme.ROW_PX + 2)
+        self._shutdown_view.setAccessibleName("Shutdown state")
 
         self._problems = QLabel()
         self._problems.setWordWrap(True)
-        self._problems.setStyleSheet("color: #9b1c1c;")
+        self._problems.setStyleSheet(f"color: {theme.NAVY}; background: {theme.CREAM};")
+        self._problems.setMargin(theme.GAP // 2)
+        self._problems.setAccessibleName("Recipe problems")
 
         self._build_layout()
         self._connect()
@@ -109,58 +149,56 @@ class RecipeEditor(QWidget):
 
     def _build_layout(self) -> None:
         header = QFormLayout()
-        header.addRow("Recipe name", self._name)
+        header.setHorizontalSpacing(theme.SECTION_GAP)
+        header.setVerticalSpacing(theme.GAP)
+        header.addRow("Name", self._name)
         header.addRow("Notes", self._notes)
 
-        trial_buttons = QHBoxLayout()
-        for button in (
-            self._add_trial,
-            self._remove_trial,
-            self._rename_trial,
-            self._duplicate_trial,
-        ):
-            trial_buttons.addWidget(button)
-        trials_box = QGroupBox("Trials")
+        trial_buttons = _button_row(
+            self._add_trial, self._remove_trial, self._duplicate_trial, self._rename_trial
+        )
+        trials_box = _section("Trials")
         trials_layout = QVBoxLayout(trials_box)
+        trials_layout.setSpacing(theme.GAP)
         trials_layout.addWidget(self._trial_list)
         trials_layout.addLayout(trial_buttons)
 
-        step_buttons = QHBoxLayout()
-        for button in (
+        step_buttons = _button_row(
             self._add_step,
             self._remove_step,
             self._duplicate_step,
             self._step_up,
             self._step_down,
             self._pulse_train,
-        ):
-            step_buttons.addWidget(button)
-        steps_box = QGroupBox("Steps of the selected trial")
-        steps_layout = QVBoxLayout(steps_box)
-        steps_layout.addWidget(
-            QLabel(
-                "Each step holds the complete rig state for its duration. Valves: open or closed."
-            )
         )
+        steps_box = _section("Steps")
+        steps_layout = QVBoxLayout(steps_box)
+        steps_layout.setSpacing(theme.GAP)
         steps_layout.addWidget(self._step_view)
         steps_layout.addLayout(step_buttons)
 
-        schedule_box = QGroupBox("Schedule")
+        schedule_box = _section("Schedule")
         schedule_layout = QFormLayout(schedule_box)
+        schedule_layout.setHorizontalSpacing(theme.SECTION_GAP)
+        schedule_layout.setVerticalSpacing(theme.GAP)
         schedule_layout.addRow(self._schedule)
         schedule_layout.addRow("Ordering", self._ordering)
         schedule_layout.addRow("Seed", self._seed)
 
-        shutdown_box = QGroupBox("Shutdown state (applied after the last trial or after Stop)")
+        shutdown_box = _section("Shutdown state, after the last trial or after Stop")
         shutdown_layout = QVBoxLayout(shutdown_box)
         shutdown_layout.addWidget(self._shutdown_view)
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(theme.SECTION_GAP)
         left_layout.addWidget(trials_box)
         left_layout.addWidget(schedule_box)
         right = QWidget()
         right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(theme.SECTION_GAP)
         right_layout.addWidget(steps_box, stretch=3)
         right_layout.addWidget(shutdown_box)
         splitter = QSplitter(Qt.Horizontal)
@@ -168,11 +206,39 @@ class RecipeEditor(QWidget):
         splitter.addWidget(right)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 3)
+        splitter.setHandleWidth(theme.SECTION_GAP)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(theme.MARGIN, theme.MARGIN, theme.MARGIN, theme.MARGIN)
+        layout.setSpacing(theme.SECTION_GAP)
         layout.addLayout(header)
         layout.addWidget(splitter, stretch=1)
         layout.addWidget(self._problems)
+
+        # Keyboard order follows the work, not the columns: trials and their steps
+        # first, then the shutdown state, then the schedule.
+        order = (
+            self._name,
+            self._notes,
+            self._trial_list,
+            self._add_trial,
+            self._remove_trial,
+            self._duplicate_trial,
+            self._rename_trial,
+            self._step_view,
+            self._add_step,
+            self._remove_step,
+            self._duplicate_step,
+            self._step_up,
+            self._step_down,
+            self._pulse_train,
+            self._shutdown_view,
+            self._schedule,
+            self._ordering,
+            self._seed,
+        )
+        for first, second in pairwise(order):
+            QWidget.setTabOrder(first, second)
 
     def _connect(self) -> None:
         self._name.textChanged.connect(self._emit_changed)
@@ -459,4 +525,5 @@ class RecipeEditor(QWidget):
     def _emit_changed(self, *_arguments) -> None:
         problems = self.problems()
         self._problems.setText("\n".join(problems[:6] + (["…"] if len(problems) > 6 else [])))
+        self._problems.setVisible(bool(problems))
         self.changed.emit()

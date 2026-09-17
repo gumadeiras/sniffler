@@ -43,7 +43,7 @@ class PulseTrainDialog(QDialog):
 
     def __init__(self, valves: list[str], template: StepRow, parent: QWidget | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Generate pulse train")
+        self.setWindowTitle("Pulse train")
         self._template = template
 
         self._valve = QComboBox()
@@ -61,7 +61,7 @@ class PulseTrainDialog(QDialog):
         self._count = QSpinBox()
         self._count.setRange(1, 10000)
         self._count.setValue(5)
-        self._end_with_gap = QCheckBox("Add a gap after the last pulse")
+        self._end_with_gap = QCheckBox("Gap after the last pulse")
         self._end_with_gap.setChecked(True)
 
         form = QFormLayout(self)
@@ -71,10 +71,10 @@ class PulseTrainDialog(QDialog):
                 "The other valves and the MFC setpoints copy the selected step."
             )
         )
-        form.addRow("Valve to pulse", self._valve)
-        form.addRow("Pulse duration", self._pulse)
-        form.addRow("Gap duration", self._gap)
-        form.addRow("Number of pulses", self._count)
+        form.addRow("Valve", self._valve)
+        form.addRow("Pulse", self._pulse)
+        form.addRow("Gap", self._gap)
+        form.addRow("Pulses", self._count)
         form.addRow(self._end_with_gap)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)

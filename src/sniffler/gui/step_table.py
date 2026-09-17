@@ -14,9 +14,11 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QBrush, QColor, QDoubleValidator
 from PySide6.QtWidgets import QLineEdit, QStyledItemDelegate, QStyleOptionViewItem, QWidget
 
+from sniffler.gui import theme
 from sniffler.recipe import RigMap, Step, duration_problem, setpoint_problem
 
-PROBLEM_BRUSH = QBrush(QColor(255, 205, 205))
+# An invalid cell sits on the cream from the artwork; pink stays for live attention.
+PROBLEM_BRUSH = QBrush(QColor(theme.CREAM))
 
 
 class StepRow:
@@ -149,7 +151,7 @@ class StepTableModel(QAbstractTableModel):
         if section == self._duration_column():
             return "Duration (s)"
         if (valve := self._valve_at(section)) is not None:
-            return f"{valve}\nvalve"
+            return valve
         if (mfc := self._mfc_at(section)) is not None:
             return f"{mfc}\n{self._rig.mfcs[mfc].flow_unit}"
         return None
