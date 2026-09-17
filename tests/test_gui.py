@@ -358,6 +358,19 @@ class TimelineTests(GuiTestCase):
         self.assertEqual(view.timeline.minimumHeight(), height)
 
 
+class StatusPanelTests(GuiTestCase):
+    def test_message_that_repeats_the_phase_is_not_shown_twice(self) -> None:
+        from sniffler.executor import Status
+        from sniffler.gui.run_view import StatusPanel
+
+        panel = StatusPanel(RIG, reduced_motion=True)
+        panel.show_status(Status(Phase.RUNNING, "Running."), 0.0)
+        self.assertEqual(panel._phase.text(), "running")
+        self.assertEqual(panel._message.text(), "")
+        panel.show_status(Status(Phase.FAILED, "usb gone"), 0.0)
+        self.assertEqual(panel._message.text(), "usb gone")
+
+
 class SniffCueTests(GuiTestCase):
     """The squirrel sniffs on each valve onset: driven by events, fast, and interruptible."""
 
@@ -368,11 +381,16 @@ class SniffCueTests(GuiTestCase):
         widget.sniff(["A"])
         self.process_events(0.2)
         widget.sniff(["B"])
-        self.assertEqual(widget.cue_name, "B")
+        self.assertEqual(widget.cue_name, "A + B", "both valves are open")
         self.assertTrue(widget.animating)
         self.assertLess(widget._animation.currentTime(), 100, "the cue restarted from the onset")
-        widget.sniff(["A", "C"])
-        self.assertEqual(widget.cue_name, "A + C")
+        widget.close("A")
+        self.assertEqual(widget.cue_name, "B")
+        widget.close("B")
+        self.assertEqual(widget.cue_name, "", "no name while every valve is closed")
+        widget.show_open("final")
+        self.assertEqual(widget.cue_name, "final")
+        self.assertTrue(widget.animating, "show_open adds a name without a new sniff")
 
     def test_reduced_motion_shows_the_static_cue_without_an_animation(self) -> None:
         from sniffler.gui.squirrel import SniffWidget
@@ -511,7 +529,7 @@ class MainWindowTests(GuiTestCase):
 
         self.assertEqual(window.controller.executor.status.phase, Phase.DONE)
         self.assertEqual(seen, ["odor-1", "odor-1"], "one onset for each odor trial")
-        self.assertEqual(squirrel.cue_name, "odor-1")
+        self.assertEqual(squirrel.cue_name, "final", "the shutdown state left only final open")
         self.assertEqual(len(window.run_view.cue_latencies), 2)
         self.assertTrue(
             all(0 <= latency < 0.1 for latency in window.run_view.cue_latencies),

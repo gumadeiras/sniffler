@@ -389,8 +389,12 @@ class StatusPanel(QWidget):
 
     def show_status(self, status: Status, elapsed: float) -> None:
         self._phase.setText(status.phase.value)
-        self._message.setText(status.message)
-        self._message.setToolTip(status.message)
+        # "running" over "Running." says nothing twice; keep the line, drop the echo.
+        message = status.message
+        if message.strip(" .").lower() == status.phase.value:
+            message = ""
+        self._message.setText(message)
+        self._message.setToolTip(message)
         self.squirrel.set_phase(status.phase)
         if status.run_directory is not None:
             self._directory.setText(status.run_directory.name)
@@ -520,11 +524,17 @@ class RunView(QWidget):
         self.timeline.set_progress(elapsed, status.trial_index)
 
     def show_event(self, event: Event, elapsed: float) -> None:
-        """A valve that opened during a step makes the squirrel sniff."""
-        if event.event != "valve_command" or event.value != "open" or event.step_index is None:
+        """A valve that opens during a step makes the squirrel sniff; its name stays while open."""
+        if event.event != "valve_command":
             return
-        self.cue_latencies.append(elapsed - event.returned_run_seconds)
-        self.status_panel.squirrel.sniff([event.device])
+        squirrel = self.status_panel.squirrel
+        if event.value != "open":
+            squirrel.close(event.device)
+        elif event.step_index is None:
+            squirrel.show_open(event.device)  # the shutdown or safe state, not an odor onset
+        else:
+            self.cue_latencies.append(elapsed - event.returned_run_seconds)
+            squirrel.sniff([event.device])
 
     def tick(self, status: Status, elapsed: float) -> None:
         self.status_panel.show_time(status, elapsed)

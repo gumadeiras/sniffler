@@ -72,7 +72,9 @@ class DemoTests(unittest.TestCase):
         status = window.controller.executor.status
         self.assertEqual(status.phase, Phase.DONE, status.message)
         self.assertEqual(warnings, [])
-        self.assertEqual(window.run_view.status_panel.squirrel.cue_name, "valve A")
+        self.assertEqual(
+            window.run_view.status_panel.squirrel.cue_name, "", "every valve closed at the end"
+        )
         cells = window.run_view.plot._cells
         self.assertNotEqual(cells["carrier flow"]["measured"].text(), "—")
         self.assertNotEqual(cells["odor flow"]["measured"].text(), "—")

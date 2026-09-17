@@ -75,7 +75,7 @@ class SniffWidget(QWidget):
         self._body_pink = _tinted(self._body, theme.PINK)
         self._scent_pink = _tinted(self._scent, theme.PINK)
         self._phase = Phase.IDLE
-        self.cue_name = ""
+        self._open: list[str] = []  # the valves that are open now, in opening order
         self._progress = 0.0  # 0 = onset, 1 = cue finished
         self._cue_active = False
         self._animation = QVariantAnimation(self)
@@ -96,6 +96,11 @@ class SniffWidget(QWidget):
     # State ---------------------------------------------------------------
 
     @property
+    def cue_name(self) -> str:
+        """The open valves, shown beside the squirrel; empty when every valve is closed."""
+        return " + ".join(self._open)
+
+    @property
     def cue_active(self) -> bool:
         return self._cue_active
 
@@ -114,15 +119,29 @@ class SniffWidget(QWidget):
         self._hold.stop()
         self._cue_active = False
         self._progress = 0.0
-        self.cue_name = ""
+        self._open = []
         self.update()
+
+    def show_open(self, valve: str) -> None:
+        """Name a valve that is open, without a sniff (the shutdown state, for example)."""
+        if valve not in self._open:
+            self._open.append(valve)
+        self.setAccessibleDescription(f"{self.cue_name} open" if self._open else "")
+        self.update()
+
+    def close(self, valve: str) -> None:
+        """A valve closed: its name leaves the squirrel."""
+        if valve in self._open:
+            self._open.remove(valve)
+            self.setAccessibleDescription(f"{self.cue_name} open" if self._open else "")
+            self.update()
 
     def sniff(self, valves: list[str]) -> None:
         """Show an odor onset now. A new onset restarts the cue; nothing queues."""
         if not valves:
             return
-        self.cue_name = " + ".join(valves)
-        self.setAccessibleDescription(f"{self.cue_name} open")
+        for valve in valves:
+            self.show_open(valve)
         self._cue_active = True
         self._progress = 0.0
         if self.reduced_motion:
