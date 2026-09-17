@@ -33,6 +33,7 @@ B = 9
 C = 10
 D = 11
 
-# Optional. Run directories are written here, relative to this file.
+# Optional. Run directories are written here. A relative path is next to this
+# file; an absolute path or one starting with ~ is used as written.
 # [runs]
 # directory = "runs"

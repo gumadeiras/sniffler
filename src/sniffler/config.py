@@ -164,7 +164,9 @@ def load_settings(path: Path) -> Settings:
         labjack_serial=_value(labjack, "serial", int, None),
         alicats=_parse_alicats(alicat),
         valves=_parse_valves(_table(data, "valves")),
-        runs_directory=path.parent / runs_directory,
+        # A relative path is next to lab.toml; an absolute path, or one that starts
+        # with ~, is used as written.
+        runs_directory=path.parent / Path(runs_directory).expanduser(),
     )
     _validate(settings)
     return settings

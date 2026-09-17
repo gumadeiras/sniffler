@@ -155,11 +155,16 @@ port = "/dev/cu.usbserial-SECOND"
 refused before any hardware command.
 
 Run directories are written to `runs` next to `lab.toml`. Set another
-location with an optional `[runs]` table:
+location with an optional `[runs]` table. A relative path is next to
+`lab.toml`; an absolute path, or one that starts with `~`, is used as written.
+Each run gets its own new folder, named by start time and recipe; nothing is
+ever overwritten.
 
 ```toml
 [runs]
 directory = "data/runs"
+# or
+directory = "/Volumes/lab-data/odor-runs"
 ```
 
 ## 4. Check the connections

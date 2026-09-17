@@ -91,6 +91,16 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(settings.valves, {"odor-1": 8, "odor-2": 9, "final": 16})
         self.assertEqual(settings.runs_directory, Path(directory, "data/runs"))
 
+    def test_absolute_and_home_runs_directories_are_used_as_written(self) -> None:
+        for written, expected in (
+            ("/data/odor-runs", Path("/data/odor-runs")),
+            ("~/odor-runs", Path.home() / "odor-runs"),
+        ):
+            with self.subTest(directory=written), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory, "lab.toml")
+                path.write_text(f'[runs]\ndirectory = "{written}"\n')
+                self.assertEqual(load_settings(path).runs_directory, expected)
+
     def test_defaults_the_runs_directory_next_to_the_configuration(self) -> None:
         settings = self.load("[labjack]\nserial = 1\n")
 
