@@ -137,7 +137,21 @@ D = 11
 ```
 
 Recipes switch valves by name only. The GUI shows this map read-only and does
-not change it. A recipe that names a valve or MFC that is not in `lab.toml` is
+not change it. The names are what the window shows, so choose the words an
+operator reads best. TOML accepts a quoted key with a space, for valves and
+for Alicat tables alike:
+
+```toml
+[valves]
+"valve A" = 8
+"valve B" = 9
+
+[alicat."carrier flow"]
+port = "/dev/cu.usbserial-FIRST"
+
+[alicat."odor flow"]
+port = "/dev/cu.usbserial-SECOND"
+``` A recipe that names a valve or MFC that is not in `lab.toml` is
 refused before any hardware command.
 
 Run directories are written to `runs` next to `lab.toml`. Set another
@@ -287,7 +301,10 @@ This command changes no output.
 ### Watch the run
 
 The *Run* tab shows the phase, the current trial and step, the commanded state,
-the measured flow, the whole run as one timeline, and the MFC plot. The window
+the measured flow, the whole run as one timeline, and the MFC plot. The
+timeline has one lane for each valve that opens during the run, filled where
+the recipe plans it open; valves that stay closed for the whole run are named
+under the bar. The window
 uses one light palette on every platform. Pink marks live attention only: the
 sniff, the current step, the progress cursor, and a high flow deviation.
 
@@ -299,6 +316,19 @@ instead of queueing it. When the operating system reduce-motion setting is on
 (macOS: Accessibility, Display; Windows: animation effects off), nothing moves
 and the nose lights up instead. Set `SNIFFLER_REDUCE_MOTION=1` to force this
 on any system, or `0` to force motion on.
+
+### Demo mode
+
+```text
+uv run sniffler-gui --demo
+```
+
+Demo mode opens the same window on fake devices with a sample recipe: four
+valves named *valve A* to *valve D*, and two MFCs named *carrier flow* and
+*odor flow*. The fake MFCs answer with lag and noise. Nothing reaches a serial
+port or the LabJack. The title bar says *sniffler demo*, the status bar says
+*fake devices, no hardware*, and runs are written to `runs-demo`. Use it to
+learn the window or to debug the interface.
 
 ### Stop and abort
 

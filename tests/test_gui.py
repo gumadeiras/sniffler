@@ -318,6 +318,32 @@ class EditingTests(GuiTestCase):
         self.assertIn("HIGH deviation", plot._labels["mfc-500"].text())
 
 
+class TimelineTests(GuiTestCase):
+    def test_lanes_show_when_each_valve_is_planned_open(self) -> None:
+        from sniffler.gui.timeline import TimelineWidget
+
+        timeline = TimelineWidget()
+        timeline.set_plan(make_recipe(0.5), ("odor", "blank", "odor", "blank"))
+
+        self.assertEqual(timeline.lanes(), {"odor-1": [(0.0, 0.5), (1.5, 2.0)]})
+        self.assertEqual(timeline.closed_all_run, ["odor-2", "final"])
+        timeline.clear()
+        self.assertEqual(timeline.lanes(), {})
+
+    def test_adjacent_open_steps_merge_into_one_interval(self) -> None:
+        from sniffler.gui.timeline import TimelineWidget
+
+        recipe = Recipe(
+            "merge",
+            (Trial("t", (step(0.5, True), step(0.5, True), step(0.5))),),
+            Schedule({"t": 1}, "block-randomized", 1),
+            make_recipe(0.5).shutdown,
+        )
+        timeline = TimelineWidget()
+        timeline.set_plan(recipe, ("t",))
+        self.assertEqual(timeline.lanes(), {"odor-1": [(0.0, 1.0)]})
+
+
 class SniffCueTests(GuiTestCase):
     """The squirrel sniffs on each valve onset: driven by events, fast, and interruptible."""
 

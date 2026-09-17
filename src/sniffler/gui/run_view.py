@@ -1,4 +1,4 @@
-"""Watch a run: the squirrel and status, the whole-run timeline, the MFC plot."""
+"""Watch a run: the squirrel and status, the timeline with valve lanes, the MFC plot."""
 
 import queue
 from collections import deque
@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any
 
 import pyqtgraph as pg
-from PySide6.QtCore import QObject, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFontDatabase, QPainter, QPaintEvent, QPen
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFontDatabase
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFormLayout,
@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 from sniffler.executor import Event, Executor, Phase, Sample, Status
 from sniffler.gui import theme
 from sniffler.gui.squirrel import SniffWidget
+from sniffler.gui.timeline import TimelineWidget
 from sniffler.recipe import Recipe, RigMap
 
 DEVIATION_FRACTION = 0.05
@@ -129,95 +130,6 @@ class RunController(QObject):
                 if self._last is not final:
                     self.status_changed.emit(final)
                 self.finished.emit(final)
-
-
-class TimelineWidget(QWidget):
-    """The whole run as one bar: trials shaded by type, steps as ticks, a pink cursor."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setMinimumHeight(64)
-        self._segments: list[tuple[float, float, str, list[float]]] = []
-        self._colors: dict[str, QColor] = {}
-        self._total = 0.0
-        self._cursor = 0.0
-        self._current: int | None = None
-
-    def set_plan(self, recipe: Recipe, order: tuple[str, ...]) -> None:
-        self._segments = []
-        self._colors = {}
-        start = 0.0
-        for name in order:
-            trial = recipe.trial(name)
-            boundaries: list[float] = []
-            offset = start
-            for step in trial.steps[:-1]:
-                offset += step.duration_seconds or 0.0
-                boundaries.append(offset)
-            self._segments.append((start, trial.duration_seconds, name, boundaries))
-            if name not in self._colors:
-                self._colors[name] = QColor(theme.TRIAL_RAMP[len(self._colors) % 6])
-            start += trial.duration_seconds
-        self._total = start
-        self._cursor = 0.0
-        self._current = None
-        self.update()
-
-    def set_progress(self, elapsed_seconds: float, trial_index: int | None) -> None:
-        self._cursor = max(0.0, min(elapsed_seconds, self._total))
-        self._current = trial_index
-        self.update()
-
-    def clear(self) -> None:
-        self._segments = []
-        self._total = 0.0
-        self._cursor = 0.0
-        self._current = None
-        self.update()
-
-    def paintEvent(self, _event: QPaintEvent) -> None:
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        area = self.rect().adjusted(1, 8, -1, -20)
-        painter.setPen(QPen(QColor(theme.LINE)))
-        painter.setBrush(QColor(theme.PANEL))
-        painter.drawRect(area)
-        if self._total <= 0 or not self._segments:
-            painter.setPen(QColor(theme.INK_SOFT))
-            painter.drawText(self.rect(), Qt.AlignCenter, "No run planned.")
-            return
-        scale = area.width() / self._total
-        for index, (start, duration, name, boundaries) in enumerate(self._segments):
-            left = area.left() + start * scale
-            width = max(1.0, duration * scale)
-            color = QColor(self._colors[name])
-            if self._current is not None and index != self._current:
-                color.setAlpha(150)
-            painter.setPen(QPen(QColor(theme.PANEL)))
-            painter.setBrush(color)
-            painter.drawRect(QRectF(left, area.top(), width, area.height()))
-            painter.setPen(QPen(QColor(theme.PANEL)))
-            for boundary in boundaries:
-                x = area.left() + boundary * scale
-                painter.drawLine(int(x), area.top() + 4, int(x), area.bottom() - 4)
-        cursor_x = area.left() + self._cursor * scale
-        painter.setPen(QPen(QColor(theme.PINK), 2))
-        painter.drawLine(int(cursor_x), area.top() - 6, int(cursor_x), area.bottom() + 6)
-        metrics = painter.fontMetrics()
-        x = self.rect().left() + 2
-        baseline = self.rect().bottom() - 4
-        square = metrics.ascent() - 2
-        for name, color in self._colors.items():
-            painter.fillRect(x, baseline - square, square, square, color)
-            painter.setPen(QPen(QColor(theme.NAVY)))
-            painter.drawText(x + square + 4, baseline, name)
-            x += square + 4 + metrics.horizontalAdvance(name) + theme.SECTION_GAP
-        painter.setPen(QPen(QColor(theme.INK_SOFT)))
-        painter.drawText(
-            self.rect().adjusted(2, 0, -2, -2),
-            Qt.AlignBottom | Qt.AlignRight,
-            f"total {self._total:.1f} s",
-        )
 
 
 class MfcPlot(QWidget):
