@@ -11,6 +11,7 @@ from pathlib import Path
 
 from sniffler import hardware
 from sniffler.config import AlicatSettings, ConfigError, Settings, load_settings
+from sniffler.runlog import RunLockError, refusal_for_active_run
 
 
 def _run_with_homebrew_exodriver(argv: Sequence[str] | None) -> int | None:
@@ -294,7 +295,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     handler: Callable[[argparse.Namespace, Settings], None] = arguments.handler
     try:
+        if arguments.device in {"labjack", "alicat"}:
+            refusal = refusal_for_active_run(settings.runs_directory)
+            if refusal is not None:
+                print(f"Refused: {refusal}", file=sys.stderr)
+                return 3
         handler(arguments, settings)
+    except RunLockError as error:
+        print(f"Refused: {error}", file=sys.stderr)
+        return 3
     except ConfigError as error:
         print(f"Configuration error: {error}", file=sys.stderr)
         return 2

@@ -125,8 +125,7 @@ class LabJackSession:
         except Exception as error:
             raise DeviceError(f"Cannot read LabJack AIN{channel}: {error}") from error
 
-    def set_digital(self, channel: int, state: bool) -> bool:
-        """Set a line that is configured as digital and read back its state."""
+    def _require_digital(self, channel: int) -> str:
         name = digital_channel_name(channel)
         is_analog = False
         if channel < 8:
@@ -135,6 +134,11 @@ class LabJackSession:
             is_analog = bool(int(self._configuration.get("EIOAnalog", 0)) & (1 << (channel - 8)))
         if is_analog:
             raise DeviceError(f"{name} is configured as analog; no output was changed.")
+        return name
+
+    def set_digital(self, channel: int, state: bool) -> bool:
+        """Set a line that is configured as digital and read back its state."""
+        name = self._require_digital(channel)
 
         try:
             self._device.setDOState(channel, int(state))
@@ -147,6 +151,36 @@ class LabJackSession:
         except Exception as error:
             raise DeviceError(
                 f"{name} was written, but its reported state cannot be read: {error}"
+            ) from error
+
+    def write_digital_lines(self, states: dict[int, bool]) -> None:
+        """Set several digital output lines in one device transaction.
+
+        Every listed line becomes an output with the given state at the same
+        time. Lines that are not listed do not change. There is no readback,
+        so a failed write reports that the outputs might have changed.
+        """
+        names = [self._require_digital(channel) for channel in states]
+        if not states:
+            return
+        import u3
+
+        mask = [0, 0, 0]
+        levels = [0, 0, 0]
+        for channel, state in states.items():
+            port, bit = divmod(channel, 8)
+            mask[port] |= 1 << bit
+            if state:
+                levels[port] |= 1 << bit
+        try:
+            self._device.getFeedback(
+                u3.PortDirWrite(Direction=mask, WriteMask=mask),
+                u3.PortStateWrite(State=levels, WriteMask=mask),
+            )
+        except Exception as error:
+            raise DeviceError(
+                f"Cannot confirm the write to {', '.join(names)}; "
+                f"the outputs might have changed: {error}"
             ) from error
 
 
@@ -195,11 +229,79 @@ def set_labjack_digital(channel: int, state: bool, serial_number: int | None = N
         return session.set_digital(channel, state)
 
 
+async def _check_setpoint_control(controller: Any) -> None:
+    """Refuse serial setpoints unless the controller is in mass-flow, source U."""
+    try:
+        state = await controller.get()
+    except Exception as error:
+        raise DeviceError(
+            f"Cannot confirm the Alicat control mode; no setpoint was sent: {error}"
+        ) from error
+
+    control_point = state.get("control_point")
+    if control_point != "mass flow":
+        raise DeviceError(
+            f"Refusing to change the setpoint while the control point is {control_point!r}. "
+            "Set the controller to mass flow first."
+        )
+
+    try:
+        source = await _read_alicat_setpoint_source(controller)
+    except DeviceError as error:
+        raise DeviceError(
+            f"Cannot confirm the Alicat setpoint source; no setpoint was sent: {error}"
+        ) from error
+    if source != "U":
+        description = _ALICAT_SETPOINT_SOURCES[source]
+        raise DeviceError(
+            f"Refusing to change the setpoint while its source is {description}. "
+            "Set the source to U for serial control with zero on power-up."
+        )
+
+
 class AlicatSession:
     """An open Alicat connection that serves repeated commands."""
 
     def __init__(self, controller: Any) -> None:
         self._controller = controller
+        self._full_scale: tuple[float, str] | None = None
+
+    async def read(self) -> dict[str, object]:
+        """Read the current state with one device round trip."""
+        try:
+            return await self._controller.get()
+        except Exception as error:
+            raise DeviceError(f"Cannot read the Alicat MFC: {error}") from error
+
+    async def prepare_setpoints(self) -> tuple[float, str]:
+        """Check the control mode once and read the full scale for later writes.
+
+        The setpoint source does not change during a run, so ``write_setpoint``
+        does not read it again.
+        """
+        await _check_setpoint_control(self._controller)
+        self._full_scale = await _read_alicat_mass_flow_full_scale(self._controller)
+        return self._full_scale
+
+    async def write_setpoint(self, flow_rate: float) -> float:
+        """Write a mass-flow setpoint after ``prepare_setpoints`` checked the device."""
+        if self._full_scale is None:
+            raise DeviceError("Call prepare_setpoints before write_setpoint; no setpoint was sent.")
+        applied_flow = normalize_alicat_flow(flow_rate)
+        maximum, flow_unit = self._full_scale
+        if abs(applied_flow) > maximum:
+            raise DeviceError(
+                f"The requested flow exceeds the Alicat full scale of "
+                f"{maximum:g} {flow_unit}; no setpoint was sent."
+            )
+        try:
+            await self._controller.set_flow_rate(applied_flow)
+        except Exception as error:
+            raise DeviceError(
+                "Cannot confirm the Alicat setpoint write; "
+                f"the setpoint might have changed: {error}"
+            ) from error
+        return applied_flow
 
     async def status(self) -> dict[str, object]:
         """Read the current state."""
@@ -219,33 +321,7 @@ class AlicatSession:
         """Set and verify the mass-flow setpoint."""
         applied_flow = normalize_alicat_flow(flow_rate)
         controller = self._controller
-
-        try:
-            state = await controller.get()
-        except Exception as error:
-            raise DeviceError(
-                f"Cannot confirm the Alicat control mode; no setpoint was sent: {error}"
-            ) from error
-
-        control_point = state.get("control_point")
-        if control_point != "mass flow":
-            raise DeviceError(
-                f"Refusing to change the setpoint while the control point is {control_point!r}. "
-                "Set the controller to mass flow first."
-            )
-
-        try:
-            source = await _read_alicat_setpoint_source(controller)
-        except DeviceError as error:
-            raise DeviceError(
-                f"Cannot confirm the Alicat setpoint source; no setpoint was sent: {error}"
-            ) from error
-        if source != "U":
-            description = _ALICAT_SETPOINT_SOURCES[source]
-            raise DeviceError(
-                f"Refusing to change the setpoint while its source is {description}. "
-                "Set the source to U for serial control with zero on power-up."
-            )
+        await _check_setpoint_control(controller)
 
         flow_unit = None
         if applied_flow != 0:

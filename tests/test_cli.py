@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import io
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -11,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 from sniffler.cli import _finite_float, _run_with_homebrew_exodriver, main
 from sniffler.config import AlicatSettings, Settings
 from sniffler.hardware import DeviceError
+from sniffler.runlog import RunLock
 
 
 class CommandLineTests(unittest.TestCase):
@@ -130,6 +132,25 @@ class CommandLineTests(unittest.TestCase):
 
         self.assertEqual((status, output), (1, ""))
         self.assertEqual(errors, "Hardware error: device not found\n")
+
+    @patch("sniffler.cli.hardware.set_labjack_digital")
+    @patch("sniffler.cli.hardware.list_serial_ports", return_value=[])
+    def test_refuses_hardware_commands_while_a_run_is_active(self, _ports, set_digital) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            runs = Path(directory, "runs")
+            RunLock(runs, runs / "20260917-101500-pulses").acquire()
+            settings = Settings(runs_directory=runs)
+
+            status, output, errors = self.run_command(
+                ["labjack", "set-digital", "--channel", "8", "--state", "high"], settings
+            )
+            ports_status, _ports_output, ports_errors = self.run_command(["ports"], settings)
+
+        self.assertEqual((status, output), (3, ""))
+        self.assertIn("A run is active", errors)
+        self.assertIn("20260917-101500-pulses", errors)
+        set_digital.assert_not_called()
+        self.assertEqual((ports_status, ports_errors), (0, ""))
 
     def test_rejects_nonfinite_flow(self) -> None:
         for value in ("nan", "inf", "-inf", "1e309"):

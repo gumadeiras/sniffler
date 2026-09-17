@@ -21,6 +21,11 @@ from sniffler.hardware import (
 )
 
 
+class FakeFeedbackCommand:
+    def __init__(self, **fields) -> None:
+        self.fields = fields
+
+
 class FakeU3:
     instances: ClassVar[list["FakeU3"]] = []
 
@@ -29,10 +34,15 @@ class FakeU3:
         self.calibrated = False
         self.closed = False
         self.digital_write: tuple[int, int] | None = None
+        self.feedback: list[list[FakeFeedbackCommand]] = []
         self.analog_mask = 0b00001111
         self.eio_analog_mask = 0b00000001
         self.config_reads = 0
         self.instances.append(self)
+
+    def getFeedback(self, *commands: FakeFeedbackCommand) -> list[None]:
+        self.feedback.append(list(commands))
+        return [None for _command in commands]
 
     def getCalibrationData(self) -> None:
         self.calibrated = True
@@ -57,7 +67,9 @@ class FakeU3:
 class LabJackTests(unittest.TestCase):
     def setUp(self) -> None:
         FakeU3.instances.clear()
-        self.u3_module = types.SimpleNamespace(U3=FakeU3)
+        self.u3_module = types.SimpleNamespace(
+            U3=FakeU3, PortDirWrite=FakeFeedbackCommand, PortStateWrite=FakeFeedbackCommand
+        )
 
     def test_routes_serial_calibrates_reads_and_closes(self) -> None:
         with patch.dict(sys.modules, {"u3": self.u3_module}):
@@ -117,6 +129,38 @@ class LabJackTests(unittest.TestCase):
         self.assertEqual(device.digital_write, (9, 0))
         self.assertEqual(device.config_reads, 1)
         self.assertTrue(device.closed)
+
+    def test_writes_several_lines_in_one_transaction(self) -> None:
+        with patch.dict(sys.modules, {"u3": self.u3_module}), open_labjack() as session:
+            session.write_digital_lines({9: True, 10: False, 16: True, 19: True})
+
+        device = FakeU3.instances[0]
+        self.assertEqual(len(device.feedback), 1)
+        direction, state = device.feedback[0]
+        self.assertEqual(direction.fields, {"Direction": [0, 6, 9], "WriteMask": [0, 6, 9]})
+        self.assertEqual(state.fields, {"State": [0, 2, 9], "WriteMask": [0, 6, 9]})
+
+    def test_refuses_a_multi_line_write_that_includes_an_analog_line(self) -> None:
+        with (
+            patch.dict(sys.modules, {"u3": self.u3_module}),
+            self.assertRaisesRegex(DeviceError, "EIO0 is configured as analog"),
+            open_labjack() as session,
+        ):
+            session.write_digital_lines({9: True, 8: True})
+
+        self.assertEqual(FakeU3.instances[0].feedback, [])
+
+    def test_reports_that_a_failed_multi_line_write_might_have_changed(self) -> None:
+        def broken(*_commands):
+            raise OSError("usb gone")
+
+        with (
+            patch.dict(sys.modules, {"u3": self.u3_module}),
+            self.assertRaisesRegex(DeviceError, "EIO1, CIO0; the outputs might have changed"),
+            open_labjack() as session,
+        ):
+            session._device.getFeedback = broken
+            session.write_digital_lines({9: True, 16: False})
 
     def test_session_closes_the_connection_when_a_command_fails(self) -> None:
         with (
@@ -321,6 +365,73 @@ class AlicatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(clients), 1)
         self.assertEqual(state["control_point"], "mass flow")
         self.assertEqual(applied, (1.0, "SCCM"))
+
+    async def test_prepared_session_writes_setpoints_with_one_command_each(self) -> None:
+        clients: list[MassFlowClient] = []
+
+        def client(address: str, **_options):
+            controller = MassFlowClient(address)
+            clients.append(controller)
+            return controller
+
+        with patch("alicat.driver.SerialClient", side_effect=client):
+            async with open_alicat("/dev/mock") as session:
+                full_scale = await session.prepare_setpoints()
+                first = await session.write_setpoint(1.234)
+                second = await session.write_setpoint(0.0)
+                state = await session.read()
+
+        messages = [
+            call.args[0].decode().strip() for call in clients[0].writer.write.call_args_list
+        ]
+        self.assertEqual(full_scale, (2.0, "SCCM"))
+        self.assertEqual((first, second), (1.23, 0.0))
+        self.assertEqual(messages, ["AR122", "A", "ALSS", "AFPF 5", "AS1.23", "AS0.00", "A"])
+        self.assertEqual(state["setpoint"], 0.0)
+        self.assertNotIn("setpoint_source", state)
+
+    async def test_prepare_refuses_an_analog_source_before_any_setpoint(self) -> None:
+        clients: list[AnalogSetpointClient] = []
+
+        def client(address: str, **_options):
+            controller = AnalogSetpointClient(address)
+            clients.append(controller)
+            return controller
+
+        with (
+            patch("alicat.driver.SerialClient", side_effect=client),
+            self.assertRaisesRegex(DeviceError, "source is analog"),
+        ):
+            async with open_alicat("/dev/mock") as session:
+                await session.prepare_setpoints()
+
+        with (
+            patch("alicat.driver.SerialClient", side_effect=client),
+            self.assertRaisesRegex(DeviceError, "Call prepare_setpoints"),
+        ):
+            async with open_alicat("/dev/mock") as session:
+                await session.write_setpoint(1.0)
+
+    async def test_write_setpoint_checks_the_cached_full_scale(self) -> None:
+        clients: list[MassFlowClient] = []
+
+        def client(address: str, **_options):
+            controller = MassFlowClient(address)
+            clients.append(controller)
+            return controller
+
+        with (
+            patch("alicat.driver.SerialClient", side_effect=client),
+            self.assertRaisesRegex(DeviceError, "full scale of 2 SCCM"),
+        ):
+            async with open_alicat("/dev/mock") as session:
+                await session.prepare_setpoints()
+                await session.write_setpoint(2.5)
+
+        messages = [
+            call.args[0].decode().strip() for call in clients[0].writer.write.call_args_list
+        ]
+        self.assertEqual(messages, ["AR122", "A", "ALSS", "AFPF 5"])
 
     async def test_rejects_nonfinite_flow_before_opening_a_connection(self) -> None:
         with (
