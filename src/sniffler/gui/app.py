@@ -121,9 +121,11 @@ class MainWindow(QMainWindow):
         read_full_scale: Callable[..., Any] = hardware.alicat_full_scale,
         store: QSettings | None = None,
         reduced_motion: bool | None = None,
+        demo: bool = False,
     ) -> None:
         super().__init__()
         self.resize(1280, 860)
+        self.demo = demo
         self.setWindowIcon(theme.window_icon())
         self._settings = settings
         self._rig = rig
@@ -166,6 +168,10 @@ class MainWindow(QMainWindow):
         self._set_running(False)
         self._refresh_title()
         self.statusBar().showMessage(f"Runs are written to {settings.runs_directory}")
+        if demo:
+            marker = QLabel("Demo: fake devices, no hardware")
+            marker.setFont(theme.font(bold=True))
+            self.statusBar().addPermanentWidget(marker)
         self._tick = QTimer(self)
         self._tick.setInterval(100)
         self._tick.timeout.connect(self._on_tick)
@@ -255,9 +261,19 @@ class MainWindow(QMainWindow):
         if path is not None:
             self._store.setValue("last_recipe", str(path))
 
+    @property
+    def recipe_path(self) -> Path | None:
+        return self._recipe_path
+
+    def show_recipe(self, recipe: Recipe) -> None:
+        """Show a recipe that has no file yet, as a clean start."""
+        self.editor.set_recipe(recipe)
+        self._mark_clean(None)
+
     def _refresh_title(self) -> None:
         name = self._recipe_path.name if self._recipe_path is not None else "unsaved recipe"
-        self.setWindowTitle(f"{name}[*] - sniffler")
+        program = "sniffler demo" if self.demo else "sniffler"
+        self.setWindowTitle(f"{name}[*] - {program}")
         self.setWindowModified(self._dirty)
 
     def _restore_session(self) -> None:
@@ -537,7 +553,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=Path("lab.toml"),
         help="Configuration file. Default: lab.toml.",
     )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="Open the window on fake devices with a sample recipe. No hardware is used.",
+    )
     arguments = parser.parse_args(argv)
+    if arguments.demo:
+        from sniffler.gui.demo import demo_window
+
+        application = QApplication.instance() or QApplication(sys.argv[:1])
+        theme.apply(application)
+        window = demo_window()
+        window.show()
+        return application.exec()
     if argv is None:
         restarted_status = hardware.relaunch_with_homebrew_exodriver("sniffler.gui.app")
         if restarted_status is not None:

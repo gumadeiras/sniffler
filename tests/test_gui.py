@@ -1,5 +1,6 @@
 """GUI tests under the offscreen Qt platform: authoring, validation, and window close."""
 
+import gc
 import os
 import tempfile
 import time
@@ -20,9 +21,9 @@ else:
 
 from sniffler.config import AlicatSettings, Settings
 from sniffler.executor import Phase
+from sniffler.fakes import FakeRig
 from sniffler.recipe import Recipe, Schedule, Step, Trial, rig_map_from_settings
 from sniffler.runlog import LOCK_FILE_NAME, RunLock
-from tests.fakes import FakeRig
 
 SETTINGS = Settings(
     labjack_serial=320107153,
@@ -69,6 +70,12 @@ class GuiTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.application = QApplication.instance() or QApplication([])
+
+    def tearDown(self) -> None:
+        # Collect the test's widgets here, on the GUI thread. A cycle of Qt wrappers
+        # collected on an executor or MFC thread frees the C++ object there and crashes.
+        self.application.processEvents()
+        gc.collect()
 
     def process_events(self, seconds: float = 0.0) -> None:
         deadline = time.monotonic() + seconds
@@ -362,6 +369,7 @@ class MainWindowTests(GuiTestCase):
         self.rig = FakeRig()
 
     def tearDown(self) -> None:
+        super().tearDown()
         self.temporary.cleanup()
 
     def store(self) -> "QSettings":

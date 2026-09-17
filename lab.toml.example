@@ -24,6 +24,9 @@ allow_negative_flow = false
 
 # Friendly valve names for recipes. The value is the LabJack digital channel:
 # 8-15 is EIO0-EIO7 (PS12DC switches S0-S7), 16-19 is CIO0-CIO3 (S8-S11).
+# These names appear in the window and in the run log. Quote a name with a
+# space: "valve A" = 8. An Alicat table can be named the same way:
+# [alicat."carrier flow"].
 [valves]
 A = 8
 B = 9

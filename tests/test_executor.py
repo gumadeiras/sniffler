@@ -9,9 +9,9 @@ import unittest
 from pathlib import Path
 
 from sniffler.executor import Event, Executor, Phase, Sample, Status
+from sniffler.fakes import FakeRig
 from sniffler.recipe import MfcMap, Recipe, RigMap, Schedule, Step, Trial
 from sniffler.runlog import LOCK_FILE_NAME, RunLock
-from tests.fakes import FakeRig
 
 
 def make_mfc(name: str) -> MfcMap:
