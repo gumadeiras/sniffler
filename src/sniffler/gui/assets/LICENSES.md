@@ -9,7 +9,9 @@ the scent lines can move on their own; the drawing itself is unchanged.
 
 ## Icons
 
-The files in `icons/` are Tabler Icons 3.46.0, outline set, unchanged.
+The files in `icons/` are Tabler Icons 3.46.0, outline set, unchanged, except
+`check-white.svg`, which is `check.svg` with a white stroke of width 3 for the
+checked indicator.
 Source: https://tabler.io/icons
 
 MIT License

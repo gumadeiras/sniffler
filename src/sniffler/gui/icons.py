@@ -45,11 +45,14 @@ def _render(name: str, color: str, size: int, ratio: int) -> QPixmap:
 
 
 @cache
-def icon(name: str) -> QIcon:
-    """Return the icon for a command name, navy when enabled and grey when disabled."""
+def icon(name: str, color: str = theme.NAVY) -> QIcon:
+    """Return the icon for a command name: ``color`` when enabled, grey when disabled.
+
+    A control drawn on navy, such as the primary button, asks for a white icon.
+    """
     result = QIcon()
     for size in SIZES:
         for ratio in (1, 2):
-            result.addPixmap(_render(name, theme.NAVY, size, ratio), QIcon.Normal)
+            result.addPixmap(_render(name, color, size, ratio), QIcon.Normal)
             result.addPixmap(_render(name, theme.DISABLED, size, ratio), QIcon.Disabled)
     return result

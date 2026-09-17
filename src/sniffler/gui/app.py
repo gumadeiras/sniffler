@@ -109,7 +109,7 @@ class RigPanel(QWidget):
 
 
 class MainWindow(QMainWindow):
-    """Recipe tab, Run tab, and the rig map."""
+    """Recipe tab, Run tab, and Config, the read-only rig map."""
 
     def __init__(
         self,
@@ -150,7 +150,7 @@ class MainWindow(QMainWindow):
         self._notes.setPlaceholderText("Stored in the run manifest")
         self._notes.setMaximumHeight(2 * theme.ROW_PX)
         self._notes.setAccessibleName("Run notes")
-        self.start_button = QPushButton(icon("start"), "Start run")
+        self.start_button = QPushButton(icon("start", theme.PANEL), "Start run")
         self.start_button.setObjectName("primary")
         self.stop_button = QPushButton(icon("stop"), "Stop after this trial")
         self.stop_button.setObjectName("consequential")
@@ -206,7 +206,7 @@ class MainWindow(QMainWindow):
         self.tabs.setDocumentMode(True)
         self.tabs.addTab(self.editor, "Recipe")
         self.tabs.addTab(run_tab, "Run")
-        self.tabs.addTab(self.rig_panel, "Rig map")
+        self.tabs.addTab(self.rig_panel, "Config")
         self.setCentralWidget(self.tabs)
 
     def _build_menu(self) -> None:

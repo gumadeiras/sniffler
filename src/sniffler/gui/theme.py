@@ -51,6 +51,8 @@ TITLE_PX = 18
 DISPLAY_PX = 34
 
 ICON_PX = 20
+CHECK_PX = 16  # the painted check box in valve cells and the QCheckBox indicator
+CHECK_MARK = (ASSETS / "icons" / "check-white.svg").as_posix()
 # Measured platform metric: the Fusion check box is 14 px high plus the text
 # line; 28 px keeps a valve cell one click tall without clipping the box.
 ROW_PX = 28
@@ -140,6 +142,10 @@ QPushButton#consequential {{ font-weight: bold; padding: 6px 14px; }}
 QHeaderView::section {{ background: {SURFACE}; color: {INK_SOFT}; border: 0;
     border-bottom: 1px solid {LINE}; border-right: 1px solid {LINE}; padding: 4px 6px; }}
 QTableView, QTableWidget, QListWidget {{ gridline-color: {LINE}; border: 1px solid {LINE}; }}
+QCheckBox::indicator {{ width: 16px; height: 16px; border: 1px solid {NAVY}; border-radius: 3px;
+    background: {PANEL}; }}
+QCheckBox::indicator:checked {{ background: {NAVY}; image: url({CHECK_MARK}); }}
+QCheckBox::indicator:disabled {{ border-color: {DISABLED}; }}
 """
 
 

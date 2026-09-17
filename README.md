@@ -295,7 +295,7 @@ two identical trials follow each other anywhere in the run. The seed that
 produced the order is stored in the run manifest. Set the seed in the recipe
 to repeat the same order, or leave it empty for a new seed for each run.
 
-*Read device limits* in the *Rig map* tab reads the full scale of each MFC.
+*Read device limits* in the *Config* tab reads the full scale of each MFC.
 This command changes no output.
 
 ### Watch the run
