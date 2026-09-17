@@ -56,7 +56,9 @@ RECIPE_FILTER = "Recipe files (*.json)"
 class RigPanel(QWidget):
     """The name to channel map from lab.toml, read-only."""
 
-    def __init__(self, rig: RigMap, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, rig: RigMap, runs_directory: Path | None = None, parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
         self._table = QTableWidget(0, 4)
         self._table.setHorizontalHeaderLabels(["Name", "Kind", "Hardware", "Limits"])
@@ -75,6 +77,14 @@ class RigPanel(QWidget):
         layout.addWidget(source)
         layout.addWidget(self._table, stretch=1)
         layout.addWidget(self.read_limits, alignment=Qt.AlignLeft)
+        if runs_directory is not None:
+            runs = QLabel(
+                f"Runs are saved in {runs_directory}. Each run gets its own new folder; "
+                "nothing is overwritten. Set [runs] directory in lab.toml to move them."
+            )
+            runs.setWordWrap(True)
+            runs.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            layout.addWidget(runs)
         self.show_rig(rig)
 
     def show_rig(self, rig: RigMap) -> None:
@@ -140,7 +150,7 @@ class MainWindow(QMainWindow):
 
         self.editor = RecipeEditor(rig)
         self.run_view = RunView(rig, reduced_motion=reduced_motion)
-        self.rig_panel = RigPanel(rig)
+        self.rig_panel = RigPanel(rig, settings.runs_directory)
         self.controller = RunController(self)
 
         self._recipe_summary = QLabel("—")
