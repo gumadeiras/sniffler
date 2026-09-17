@@ -28,7 +28,14 @@ from sniffler.recipe import (
     safe_state,
     validate_recipe,
 )
-from sniffler.runlog import RunLock, RunLockError, RunLog, RunLogError, run_id, wall_time_now
+from sniffler.runlog import (
+    RunLock,
+    RunLockError,
+    RunLog,
+    RunLogError,
+    new_run_directory,
+    wall_time_now,
+)
 
 SPIN_SECONDS = 0.015
 MFC_READ_FAILURE_LIMIT = 5
@@ -376,7 +383,7 @@ class Executor:
                 Phase.FAILED, f"The recipe is not valid. No hardware was used.\n{error}"
             )
 
-        directory = self._runs_directory / run_id(self._recipe.name)
+        directory = new_run_directory(self._runs_directory, self._recipe.name)
         lock = RunLock(self._runs_directory, directory)
         try:
             lock.acquire()

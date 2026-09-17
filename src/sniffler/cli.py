@@ -3,8 +3,6 @@
 import argparse
 import asyncio
 import math
-import os
-import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -16,7 +14,7 @@ from sniffler.runlog import RunLockError, refusal_for_active_run
 
 def _run_with_homebrew_exodriver(argv: Sequence[str] | None) -> int | None:
     """Restart LabJack commands with the Apple Silicon Homebrew driver path."""
-    if argv is not None or sys.platform != "darwin":
+    if argv is not None:
         return None
     command_arguments = sys.argv[1:]
     if command_arguments[:1] == ["--config"]:
@@ -25,19 +23,7 @@ def _run_with_homebrew_exodriver(argv: Sequence[str] | None) -> int | None:
         command_arguments = command_arguments[1:]
     if command_arguments[:1] != ["labjack"]:
         return None
-
-    driver_directory = Path("/opt/homebrew/lib")
-    driver = driver_directory / "liblabjackusb.dylib"
-    current_path = os.environ.get("DYLD_LIBRARY_PATH", "").split(os.pathsep)
-    if not driver.exists() or str(driver_directory) in current_path:
-        return None
-
-    environment = os.environ.copy()
-    environment["DYLD_LIBRARY_PATH"] = os.pathsep.join(
-        [str(driver_directory), *filter(None, current_path)]
-    )
-    command = [sys.executable, "-m", "sniffler.cli", *sys.argv[1:]]
-    return subprocess.run(command, env=environment, check=False).returncode
+    return hardware.relaunch_with_homebrew_exodriver("sniffler.cli")
 
 
 def _finite_float(value: str) -> float:

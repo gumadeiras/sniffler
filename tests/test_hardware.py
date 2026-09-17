@@ -13,6 +13,7 @@ from sniffler.hardware import (
     DeviceError,
     alicat_status,
     digital_channel_name,
+    labjack_status,
     open_alicat,
     open_labjack,
     read_labjack_analog,
@@ -111,6 +112,17 @@ class LabJackTests(unittest.TestCase):
             self.assertRaisesRegex(DeviceError, "EIO0 is configured as analog"),
         ):
             set_labjack_digital(8, True)
+
+    def test_explains_a_missing_driver_without_a_traceback(self) -> None:
+        def missing_driver(**_options):
+            raise AttributeError("'NoneType' object has no attribute 'LJUSB_OpenDevice'")
+
+        module = types.SimpleNamespace(U3=missing_driver)
+        with (
+            patch.dict(sys.modules, {"u3": module}),
+            self.assertRaisesRegex(DeviceError, "LabJack driver is not loaded"),
+        ):
+            labjack_status()
 
     def test_names_each_digital_channel_group(self) -> None:
         self.assertEqual(digital_channel_name(4), "FIO4")

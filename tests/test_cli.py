@@ -160,11 +160,11 @@ class CommandLineTests(unittest.TestCase):
             ):
                 _finite_float(value)
 
-    @patch("sniffler.cli.subprocess.run")
-    @patch("sniffler.cli.Path.exists", return_value=True)
-    @patch("sniffler.cli.sys.platform", "darwin")
+    @patch("sniffler.hardware.subprocess.run")
+    @patch("sniffler.hardware.Path.exists", return_value=True)
+    @patch("sniffler.hardware.sys.platform", "darwin")
     @patch(
-        "sniffler.cli.sys.argv",
+        "sniffler.hardware.sys.argv",
         ["sniffler", "--config", "other.toml", "labjack", "status"],
     )
     def test_uses_homebrew_driver_with_config_argument(self, _exists, run) -> None:
@@ -174,8 +174,20 @@ class CommandLineTests(unittest.TestCase):
             status = _run_with_homebrew_exodriver(None)
 
         self.assertEqual(status, 0)
+        self.assertEqual(run.call_args.args[0][1:3], ["-m", "sniffler.cli"])
         environment = run.call_args.kwargs["env"]
         self.assertEqual(environment["DYLD_LIBRARY_PATH"], str(Path("/opt/homebrew/lib")))
+
+    @patch("sniffler.hardware.subprocess.run")
+    @patch("sniffler.hardware.Path.exists", return_value=True)
+    @patch("sniffler.hardware.sys.platform", "darwin")
+    @patch("sniffler.hardware.sys.argv", ["sniffler", "alicat", "status"])
+    def test_alicat_commands_do_not_restart_for_the_driver(self, _exists, run) -> None:
+        with patch.dict(os.environ, {"DYLD_LIBRARY_PATH": ""}):
+            status = _run_with_homebrew_exodriver(None)
+
+        self.assertIsNone(status)
+        run.assert_not_called()
 
 
 if __name__ == "__main__":

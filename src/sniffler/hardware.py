@@ -1,10 +1,15 @@
 """Hardware operations for the LabJack U3 and Alicat MFC."""
 
 import math
+import os
+import subprocess
 import sys
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager, suppress
+from pathlib import Path
 from typing import Any
+
+HOMEBREW_DRIVER_DIRECTORY = Path("/opt/homebrew/lib")
 
 
 class DeviceError(RuntimeError):
@@ -63,6 +68,35 @@ async def _read_alicat_setpoint_source(controller: Any) -> str:
     ):
         raise DeviceError(f"Invalid Alicat setpoint-source response {response!r}.")
     return values[1]
+
+
+def homebrew_exodriver_environment() -> dict[str, str] | None:
+    """Return an environment where dyld finds the Homebrew Exodriver, or None when not needed.
+
+    LabJackPython looks for liblabjackusb.dylib in /usr/local/lib. Homebrew on
+    Apple silicon installs it in /opt/homebrew/lib, and dyld reads
+    DYLD_LIBRARY_PATH only when the process starts.
+    """
+    if sys.platform != "darwin":
+        return None
+    driver = HOMEBREW_DRIVER_DIRECTORY / "liblabjackusb.dylib"
+    current_path = os.environ.get("DYLD_LIBRARY_PATH", "").split(os.pathsep)
+    if not driver.exists() or str(HOMEBREW_DRIVER_DIRECTORY) in current_path:
+        return None
+    environment = os.environ.copy()
+    environment["DYLD_LIBRARY_PATH"] = os.pathsep.join(
+        [str(HOMEBREW_DRIVER_DIRECTORY), *filter(None, current_path)]
+    )
+    return environment
+
+
+def relaunch_with_homebrew_exodriver(module: str) -> int | None:
+    """Run ``python -m module`` again with the Homebrew driver path when that is needed."""
+    environment = homebrew_exodriver_environment()
+    if environment is None:
+        return None
+    command = [sys.executable, "-m", module, *sys.argv[1:]]
+    return subprocess.run(command, env=environment, check=False).returncode
 
 
 def list_serial_ports() -> list[tuple[str, str]]:
@@ -198,6 +232,11 @@ def open_labjack(serial_number: int | None = None) -> Iterator[LabJackSession]:
         if device is not None:
             with suppress(Exception):
                 device.close()
+        if isinstance(error, AttributeError) and "LJUSB" in str(error):
+            raise DeviceError(
+                "The LabJack driver is not loaded. Install the Exodriver on macOS or Linux, "
+                "or the UD driver on Windows, and start the program again."
+            ) from error
         raise DeviceError(f"Cannot connect to the LabJack U3: {error}") from error
 
     try:

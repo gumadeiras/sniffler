@@ -59,6 +59,17 @@ def run_id(recipe_name: str, now: datetime | None = None) -> str:
     return f"{now:%Y%m%d-%H%M%S}-{slug}"
 
 
+def new_run_directory(runs_directory: Path, recipe_name: str) -> Path:
+    """Return a run directory path that does not exist yet."""
+    base = runs_directory / run_id(recipe_name)
+    candidate = base
+    number = 2
+    while candidate.exists():
+        candidate = base.with_name(f"{base.name}-{number}")
+        number += 1
+    return candidate
+
+
 def active_run(runs_directory: Path) -> str | None:
     """Return the run directory named by the lock file, or None when no run is active."""
     lock = runs_directory / LOCK_FILE_NAME

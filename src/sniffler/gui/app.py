@@ -451,6 +451,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Configuration file. Default: lab.toml.",
     )
     arguments = parser.parse_args(argv)
+    if argv is None:
+        restarted_status = hardware.relaunch_with_homebrew_exodriver("sniffler.gui.app")
+        if restarted_status is not None:
+            return restarted_status
     application = QApplication.instance() or QApplication(sys.argv[:1])
     try:
         settings = load_settings(arguments.config)

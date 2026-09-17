@@ -14,6 +14,7 @@ from sniffler.runlog import (
     RunLog,
     RunLogError,
     active_run,
+    new_run_directory,
     refusal_for_active_run,
     run_id,
 )
@@ -99,6 +100,18 @@ class RunLogTests(unittest.TestCase):
             RunLog(Path(directory, "run")).open({})
             with self.assertRaisesRegex(RunLogError, "Cannot create the run directory"):
                 RunLog(Path(directory, "run")).open({})
+
+    def test_new_run_directory_never_reuses_a_name(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            runs = Path(directory)
+            first = new_run_directory(runs, "pulses")
+            first.mkdir()
+            second = new_run_directory(runs, "pulses")
+            second.mkdir()
+            third = new_run_directory(runs, "pulses")
+
+        self.assertEqual(second.name, f"{first.name}-2")
+        self.assertEqual(third.name, f"{first.name}-3")
 
     def test_run_id_is_a_timestamp_and_a_slug(self) -> None:
         moment = datetime(2026, 9, 17, 10, 15, 0)
