@@ -72,6 +72,41 @@ class ConfigurationTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "one letter"):
             self.load('[alicat]\nunit = ""\n')
 
+    def test_loads_valves_and_the_runs_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "lab.toml")
+            path.write_text(
+                """
+                [valves]
+                odor-1 = 8
+                odor-2 = 9
+                final = 16
+
+                [runs]
+                directory = "data/runs"
+                """
+            )
+            settings = load_settings(path)
+
+        self.assertEqual(settings.valves, {"odor-1": 8, "odor-2": 9, "final": 16})
+        self.assertEqual(settings.runs_directory, Path(directory, "data/runs"))
+
+    def test_defaults_the_runs_directory_next_to_the_configuration(self) -> None:
+        settings = self.load("[labjack]\nserial = 1\n")
+
+        self.assertEqual(settings.runs_directory.name, "runs")
+        self.assertEqual(
+            load_settings(Path("missing/lab.toml")).runs_directory, Path("missing/runs")
+        )
+
+    def test_rejects_invalid_valve_channels(self) -> None:
+        with self.assertRaisesRegex(ConfigError, "4 through 19"):
+            self.load("[valves]\nodor = 3\n")
+        with self.assertRaisesRegex(ConfigError, "same channel"):
+            self.load("[valves]\nodor = 8\nblank = 8\n")
+        with self.assertRaisesRegex(ConfigError, "channel number"):
+            self.load('[valves]\nodor = "EIO0"\n')
+
     def test_example_uses_the_device_limit_by_default(self) -> None:
         example = Path(__file__).parents[1] / "lab.toml.example"
         settings = load_settings(example)

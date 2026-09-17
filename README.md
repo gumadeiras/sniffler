@@ -117,7 +117,29 @@ port = "/dev/cu.usbserial-FIRST"
 port = "/dev/cu.usbserial-SECOND"
 ```
 
-The table names are the names used with `--name`.
+The table names are the names used with `--name`. Recipes also use these
+names for MFC setpoints.
+
+Name each valve that a recipe can switch. The value is the LabJack digital
+channel of the PS12DC switch that drives the valve:
+
+```toml
+[valves]
+odor-1 = 8
+odor-2 = 9
+```
+
+Recipes switch valves by name only. The GUI shows this map read-only and does
+not change it. A recipe that names a valve or MFC that is not in `lab.toml` is
+refused before any hardware command.
+
+Run directories are written to `runs` next to `lab.toml`. Set another
+location with an optional `[runs]` table:
+
+```toml
+[runs]
+directory = "data/runs"
+```
 
 ## 4. Check the connections
 

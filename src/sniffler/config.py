@@ -27,6 +27,9 @@ class AlicatSettings:
     units: dict[str, str] = field(default_factory=dict)
 
 
+DIGITAL_OUTPUT_CHANNELS = range(4, 20)
+
+
 @dataclass(frozen=True)
 class Settings:
     """Settings that differ between computers or connected devices."""
@@ -35,6 +38,8 @@ class Settings:
     alicats: dict[str, AlicatSettings] = field(
         default_factory=lambda: {"default": AlicatSettings()}
     )
+    valves: dict[str, int] = field(default_factory=dict)
+    runs_directory: Path = Path("runs")
 
 
 def _table(data: dict[str, Any], key: str) -> dict[str, Any]:
@@ -117,23 +122,49 @@ def _parse_alicats(alicat: dict[str, Any]) -> dict[str, AlicatSettings]:
     return controllers
 
 
+def _parse_valves(valves: dict[str, Any]) -> dict[str, int]:
+    channels: dict[str, int] = {}
+    for name, channel in valves.items():
+        if not name.strip():
+            raise ConfigError("A valve name in [valves] must not be empty.")
+        if isinstance(channel, bool) or not isinstance(channel, int):
+            raise ConfigError(f"valves.{name} must be a digital channel number.")
+        if channel not in DIGITAL_OUTPUT_CHANNELS:
+            raise ConfigError(
+                f"valves.{name} must be a digital channel from 4 through 19; "
+                f"8-15 is EIO0-EIO7 and 16-19 is CIO0-CIO3."
+            )
+        used = [other for other, used_channel in channels.items() if used_channel == channel]
+        if used:
+            raise ConfigError(f"valves.{name} and valves.{used[0]} use the same channel.")
+        channels[name] = channel
+    return channels
+
+
 def load_settings(path: Path) -> Settings:
     """Load settings, or return defaults when the file does not exist."""
     if not path.exists():
-        return Settings()
+        return Settings(runs_directory=path.parent / "runs")
     try:
         with path.open("rb") as file:
             data = tomllib.load(file)
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise ConfigError(f"Cannot read {path}: {error}") from error
 
-    _reject_unknown(data, {"labjack", "alicat"}, "configuration")
+    _reject_unknown(data, {"labjack", "alicat", "valves", "runs"}, "configuration")
     labjack = _table(data, "labjack")
     alicat = _table(data, "alicat")
+    runs = _table(data, "runs")
     _reject_unknown(labjack, {"serial"}, "[labjack]")
+    _reject_unknown(runs, {"directory"}, "[runs]")
+    runs_directory = _value(runs, "directory", str, "runs")
+    if not runs_directory.strip():
+        raise ConfigError("runs.directory must not be empty.")
     settings = Settings(
         labjack_serial=_value(labjack, "serial", int, None),
         alicats=_parse_alicats(alicat),
+        valves=_parse_valves(_table(data, "valves")),
+        runs_directory=path.parent / runs_directory,
     )
     _validate(settings)
     return settings
