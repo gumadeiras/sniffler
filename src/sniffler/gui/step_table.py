@@ -9,10 +9,17 @@ from PySide6.QtCore import (
     QLocale,
     QModelIndex,
     QObject,
+    QRectF,
     Qt,
 )
-from PySide6.QtGui import QBrush, QColor, QDoubleValidator
-from PySide6.QtWidgets import QLineEdit, QStyledItemDelegate, QStyleOptionViewItem, QWidget
+from PySide6.QtGui import QBrush, QColor, QDoubleValidator, QPainter, QPainterPath, QPen
+from PySide6.QtWidgets import (
+    QLineEdit,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
+    QWidget,
+)
 
 from sniffler.gui import theme
 from sniffler.recipe import RigMap, Step, duration_problem, setpoint_problem
@@ -198,6 +205,8 @@ class StepTableModel(QAbstractTableModel):
             if role == Qt.DisplayRole:
                 return "open" if state else "closed"
             return None
+        if role == Qt.TextAlignmentRole:
+            return Qt.AlignCenter
         if role in {Qt.DisplayRole, Qt.EditRole}:
             if column == self._duration_column():
                 value = step.duration
@@ -249,7 +258,53 @@ def _parse_number(value: Any) -> float | None:
 
 
 class StepDelegate(QStyledItemDelegate):
-    """Numbers only in duration and setpoint cells; one click anywhere toggles a valve cell."""
+    """Numbers only in duration and setpoint cells; one click anywhere toggles a valve cell.
+
+    A valve cell is painted here: a navy check box and the word open or closed,
+    centered as one group, the same on every platform and visible on a selected row.
+    """
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
+        model = index.model()
+        if not (isinstance(model, StepTableModel) and model.is_valve_column(index.column())):
+            super().paint(painter, option, index)
+            return
+        style = option.widget.style() if option.widget else None
+        if style is not None:
+            style.drawPrimitive(QStyle.PE_PanelItemViewItem, option, painter, option.widget)
+        selected = bool(option.state & QStyle.State_Selected)
+        ink = QColor(theme.PANEL if selected else theme.NAVY)
+        fill = QColor(theme.NAVY if selected else theme.PANEL)
+        is_open = model.data(index, Qt.CheckStateRole) == Qt.Checked
+        text = "open" if is_open else "closed"
+        metrics = option.fontMetrics
+        gap = theme.UNIT // 2
+        group = theme.CHECK_PX + gap + metrics.horizontalAdvance("closed")
+        left = option.rect.center().x() - group / 2
+        box = QRectF(
+            left, option.rect.center().y() - theme.CHECK_PX / 2, theme.CHECK_PX, theme.CHECK_PX
+        )
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(ink, 1.5))
+        painter.setBrush(ink if is_open else fill)
+        painter.drawRoundedRect(box, 3, 3)
+        if is_open:
+            mark = QPainterPath()
+            mark.moveTo(box.left() + box.width() * 0.22, box.top() + box.height() * 0.52)
+            mark.lineTo(box.left() + box.width() * 0.42, box.top() + box.height() * 0.72)
+            mark.lineTo(box.left() + box.width() * 0.80, box.top() + box.height() * 0.30)
+            painter.setPen(QPen(fill, 2.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawPath(mark)
+        painter.setPen(ink)
+        painter.setFont(option.font)
+        painter.drawText(
+            QRectF(box.right() + gap, option.rect.top(), group, option.rect.height()),
+            Qt.AlignLeft | Qt.AlignVCenter,
+            text,
+        )
+        painter.restore()
 
     def editorEvent(
         self,
