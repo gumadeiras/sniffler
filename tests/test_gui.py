@@ -153,7 +153,7 @@ class RecipeEditorTests(GuiTestCase):
 
         self.assertEqual(model.data(model.index(0, 4), Qt.BackgroundRole), PROBLEM_BRUSH)
         self.assertIn("lab.toml limit of 400", model.data(model.index(0, 4), Qt.ToolTipRole))
-        self.assertIn("full scale of 2000", model.data(model.index(0, 5), Qt.ToolTipRole))
+        self.assertIn("device maximum of 2000", model.data(model.index(0, 5), Qt.ToolTipRole))
         self.assertIn("greater than zero", model.data(model.index(0, 0), Qt.ToolTipRole))
         self.assertIsNone(model.data(model.index(0, 1), Qt.BackgroundRole))
         problems = editor.problems()
@@ -633,7 +633,7 @@ class MainWindowTests(GuiTestCase):
         window.check_stale_lock()
 
         self.assertFalse((self.runs / LOCK_FILE_NAME).exists())
-        self.assertIn("Lock file removed", window.statusBar().currentMessage())
+        self.assertIn("Run mark cleared", window.statusBar().currentMessage())
 
     def test_new_recipe_asks_about_unsaved_edits(self) -> None:
         window = self.window(answer=QMessageBox.Cancel)

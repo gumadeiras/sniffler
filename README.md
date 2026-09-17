@@ -262,11 +262,11 @@ Use `--config another-lab.toml` to select another configuration file.
 A recipe has three levels and one primitive:
 
 - **Step**: a duration plus the complete rig state. Each step sets every
-  valve to open or closed and gives every MFC a setpoint. At any moment one
+  valve to open or closed and gives every MFC a target flow. At any moment one
   step describes the rig.
 - **Trial**: a named, ordered list of steps.
 - **Schedule**: a count for each trial and the ordering policy.
-- **Shutdown state**: one step with no duration. The executor applies it after
+- **End state**: one step with no duration. The executor applies it after
   the last trial or after *Stop after this trial*.
 
 Build the recipe in the *Recipe* tab. Steps are rows in a table. One click
@@ -275,8 +275,8 @@ from the keyboard. Double-click a trial name to rename it. The icon buttons
 under the trial list and under the step table add, remove, duplicate, and move
 items; each one names its command in a tooltip. The toolbar holds New, Open,
 and Save. Each cell checks its value at once: a duration must be greater
-than zero, and a setpoint must respect `minimum_flow`, `maximum_flow`, and
-`allow_negative_flow` from `lab.toml` and the device full scale. A cell with a
+than zero, and a target flow must respect `minimum_flow`, `maximum_flow`, and
+`allow_negative_flow` from `lab.toml` and the device maximum. A cell with a
 problem is red and shows the reason in its tooltip. The run cannot start while
 a problem exists.
 
@@ -289,13 +289,14 @@ not an input format: build and edit recipes in the window. The window title
 shows the recipe file and marks unsaved changes; the program asks before it
 discards them. The last saved recipe opens again at the next start.
 
-The ordering `block-randomized` shuffles trials inside blocks that hold one
+The ordering *shuffled in blocks* (`block-randomized` in the file) shuffles
+trials inside blocks that hold one
 trial of each type, so a run that stops early is still balanced. No more than
 two identical trials follow each other anywhere in the run. The seed that
 produced the order is saved with the run in `manifest.json`. Set the seed in the recipe
 to repeat the same order, or leave it empty for a new seed for each run.
 
-*Read device limits* in the *Config* tab reads the full scale of each MFC.
+*Read device limits* in the *Config* tab reads the maximum of each MFC.
 This command changes no output.
 
 ### Watch the run
@@ -303,7 +304,7 @@ This command changes no output.
 The *Run* tab shows the phase, the current trial and step, the commanded
 valves, the whole run as one timeline, and the MFC plot with one readout row
 for each MFC: commanded, measured, and deviation. A deviation of more than
-5 % of the full scale is marked with a leading "!" in bold pink. The
+5 % of the device maximum is marked with a leading "!" in bold pink. The
 timeline has one lane for each valve the recipe opens, filled where the recipe
 plans it open. Nothing on this tab moves while a run changes the content: the
 labels have fixed heights, the plot axes are fixed at run start, and a splitter
@@ -337,12 +338,13 @@ learn the window or to debug the interface.
 ### Stop and abort
 
 - *Stop after this trial* finishes the current trial and then applies the
-  recipe shutdown state.
-- *Abort now* stops at once and forces the safe state: all valves closed,
-  every MFC setpoint zero. The recipe shutdown state is ignored.
+  recipe end state.
+- *Abort now* stops at once, closes all valves, and sets every flow to zero.
+  The recipe end state is ignored.
 
-The safe state is also applied when a device command fails and when the
-window closes during a run. It is not configurable.
+The same all-off state is applied when a device command fails and when the
+window closes during a run. It is not configurable. The run log calls it
+`safe_state` and the end state `shutdown_state`.
 
 ### Run directories
 
@@ -353,7 +355,7 @@ recipe name:
   trial order, the start time, the software version, the operator notes, and
   the outcome.
 - `events.csv`: every valve and MFC command, trial boundaries, stop and abort
-  requests, errors, and the shutdown or safe state. The time columns are
+  requests, errors, and the end state or the all-off state. The time columns are
   seconds since the run started. `returned_run_seconds` is when the command
   returned from the device. `commanded_run_seconds` is when it was sent.
   `scheduled_run_seconds` is the planned time.

@@ -68,7 +68,7 @@ class PulseTrainDialog(QDialog):
         form.addRow(
             QLabel(
                 "Each pulse and each gap becomes one step row. "
-                "The other valves and the MFC setpoints copy the selected step."
+                "The other valves and the target flows copy the selected step."
             )
         )
         form.addRow("Valve", self._valve)

@@ -66,12 +66,12 @@ class RigPanel(QWidget):
         self._table.setWordWrap(True)
         self.read_limits = QPushButton(icon("read-limits"), "Read device limits")
         self.read_limits.setToolTip(
-            "Read the full scale of every MFC. This command changes no output."
+            "Read the device maximum of every MFC. This command changes no output."
         )
         layout = QVBoxLayout(self)
         layout.setContentsMargins(theme.MARGIN, theme.MARGIN, theme.MARGIN, theme.MARGIN)
         layout.setSpacing(theme.GAP)
-        source = QLabel("Read from lab.toml. Edit that file to change the map.")
+        source = QLabel("The devices, read from lab.toml. Edit that file to change them.")
         layout.addWidget(source)
         layout.addWidget(self._table, stretch=1)
         layout.addWidget(self.read_limits, alignment=Qt.AlignLeft)
@@ -87,9 +87,9 @@ class RigPanel(QWidget):
             if mfc.maximum_flow is not None:
                 limits.append(f"lab.toml maximum {mfc.maximum_flow:g}")
             limits.append(
-                "full scale not read yet"
+                "device maximum not read yet"
                 if mfc.full_scale is None
-                else f"device full scale {mfc.full_scale:g}"
+                else f"device maximum {mfc.full_scale:g}"
             )
             if mfc.allow_negative_flow:
                 limits.append("negative flow allowed")
@@ -156,10 +156,8 @@ class MainWindow(QMainWindow):
         self.stop_button.setObjectName("consequential")
         self.abort_button = QPushButton("Abort now")
         self.abort_button.setObjectName("consequential")
-        self.abort_button.setToolTip(
-            "Stop now and force the safe state: all valves closed, every MFC setpoint zero."
-        )
-        self.stop_button.setToolTip("Finish the current trial, then apply the shutdown state.")
+        self.abort_button.setToolTip("Stop now: close all valves and set every flow to zero.")
+        self.stop_button.setToolTip("Finish the current trial, then apply the end state.")
 
         self._build_layout()
         self._build_menu()
@@ -397,7 +395,7 @@ class MainWindow(QMainWindow):
         if problems:
             self._tell(self, "Read device limits", "\n".join(problems))
         else:
-            self.statusBar().showMessage("Device full scales read and applied to the editor.")
+            self.statusBar().showMessage("Device maximums read and applied to the editor.")
 
     def set_rig(self, rig: RigMap) -> None:
         """Apply a new rig map. Device limits do not count as recipe edits."""
@@ -449,8 +447,8 @@ class MainWindow(QMainWindow):
             self._tell(
                 self,
                 "A run is active",
-                f"{directory}\nWait for it to end, or remove {runs_directory / LOCK_FILE_NAME} "
-                "if that run ended abnormally.",
+                f"{directory}\nWait for it to end, or remove the file "
+                f"{runs_directory / LOCK_FILE_NAME} if that run ended abnormally.",
             )
             return
         seed = recipe.schedule.seed
@@ -510,22 +508,22 @@ class MainWindow(QMainWindow):
         answer = self._ask(
             self,
             "A previous run did not end normally",
-            f"The lock file names {directory}.\nNo run is active in this window. "
-            "Remove the lock file so that new runs can start?",
+            f"A run is still marked active: {directory}.\nNo run is active in this window. "
+            f"Clear the mark so that new runs can start? This removes the file "
+            f"{runs_directory / LOCK_FILE_NAME}.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
         if answer == QMessageBox.Yes:
             (runs_directory / LOCK_FILE_NAME).unlink(missing_ok=True)
-            self.statusBar().showMessage("Lock file removed.")
+            self.statusBar().showMessage("Run mark cleared.")
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self.controller.is_running:
             answer = self._ask(
                 self,
                 "A run is active",
-                "Abort the run now and close? The safe state is applied: "
-                "all valves closed, every MFC setpoint zero.",
+                "Abort the run now and close? All valves close and every flow goes to zero.",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )
@@ -535,7 +533,7 @@ class MainWindow(QMainWindow):
             status = self.controller.abort_and_wait()
             self._tick.stop()
             if status is not None and status.phase == Phase.FAILED:
-                self._tell(self, "The safe state might not be complete", status.message)
+                self._tell(self, "Some valves or flows might still be on", status.message)
         if not self.offer_to_save():
             event.ignore()
             return

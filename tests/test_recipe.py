@@ -120,7 +120,7 @@ class ValidationTests(unittest.TestCase):
             problems,
         )
         self.assertIn("Trial 'odor', step 1: valve 'odor-2' has no state.", problems)
-        self.assertIn("Trial 'odor', step 1: MFC 'mfc-500' has no setpoint.", problems)
+        self.assertIn("Trial 'odor', step 1: MFC 'mfc-500' has no target flow.", problems)
 
     def test_enforces_lab_limits_and_full_scale_per_cell(self) -> None:
         mfc = make_mfc(minimum_flow=10.0, maximum_flow=400.0, full_scale=500.0)
@@ -129,7 +129,7 @@ class ValidationTests(unittest.TestCase):
         self.assertIn("at least 10", setpoint_problem(9.99, mfc))
         self.assertIn("lab.toml limit of 400", setpoint_problem(400.01, mfc))
         self.assertIn("Negative flow is disabled", setpoint_problem(-1.0, mfc))
-        self.assertIn("full scale of 500", setpoint_problem(550.0, make_mfc(full_scale=500.0)))
+        self.assertIn("device maximum of 500", setpoint_problem(550.0, make_mfc(full_scale=500.0)))
         self.assertIsNone(setpoint_problem(450.0, make_mfc(full_scale=500.0)))
         self.assertIn("finite", setpoint_problem(float("nan"), mfc))
         self.assertIn("number", setpoint_problem("12", mfc))
@@ -150,7 +150,7 @@ class ValidationTests(unittest.TestCase):
         problems = recipe_problems(recipe, RIG)
 
         self.assertIn("Trial 'odor', step 1: The duration must be greater than zero.", problems)
-        self.assertIn("Shutdown state: the shutdown state has no duration.", problems)
+        self.assertIn("End state: the end state has no duration.", problems)
 
     def test_refuses_schedule_problems(self) -> None:
         recipe = make_recipe(schedule=Schedule({"odor": 0, "ghost": 2}, "random", -1))

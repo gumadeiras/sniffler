@@ -218,7 +218,7 @@ class ExitPathTests(ExecutorTestCase):
 
         self.assertEqual(status.phase, Phase.FAILED, status.message)
         self.assertIn("usb gone", status.message)
-        self.assertIn("safe state was applied", status.message)
+        self.assertIn("All valves closed, every flow zero", status.message)
         self.assertEqual(self.final_valves(), {8: False, 9: False, 16: False})
         self.assertEqual(self.rig.alicats["mfc-500"].setpoints[-1], 0.0)
         self.assertEqual(self.rig.alicats["mfc-2000"].setpoints[-1], 0.0)

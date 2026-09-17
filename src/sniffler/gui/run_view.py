@@ -367,7 +367,7 @@ class StatusPanel(QWidget):
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         form.addRow("Trial", self._trial)
         form.addRow("Time", self._time)
-        form.addRow("Directory", self._directory)
+        form.addRow("Run folder", self._directory)
         form.addRow("Valves", self._valves)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)

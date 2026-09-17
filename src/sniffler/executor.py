@@ -481,7 +481,7 @@ class Executor:
             self._record("run_start", detail=f"planned order: {', '.join(order)}")
             self._publish(phase=Phase.RUNNING, message="Running.")
             stopped = self._run_trials(order, labjack, worker)
-            self._publish(phase=Phase.FINISHING, message="Applying the shutdown state.")
+            self._publish(phase=Phase.FINISHING, message="Applying the end state.")
             problems = self._apply_final_state(
                 labjack, worker, self._recipe.shutdown, "shutdown_state"
             )
@@ -490,22 +490,26 @@ class Executor:
             if stopped:
                 done = self._status.trial_index
                 count = 0 if done is None else done + 1
-                message = f"Stopped after trial {count} of {len(order)}. Shutdown state applied."
+                message = f"Stopped after trial {count} of {len(order)}. End state applied."
             else:
-                message = f"Done. {len(order)} trials ran. Shutdown state applied."
+                message = f"Done. {len(order)} trials ran. End state applied."
             return Phase.STOPPED if stopped else Phase.DONE, message, worker.full_scales
         except _Aborted:
-            self._publish(phase=Phase.FINISHING, message="Aborting. Applying the safe state.")
+            self._publish(
+                phase=Phase.FINISHING, message="Aborting. Closing all valves, every flow to zero."
+            )
             problems = self._apply_final_state(labjack, worker, safe_state(self._rig), "safe_state")
             if problems:
                 return Phase.FAILED, "Aborted. " + " ".join(problems), worker.full_scales
-            message = "Aborted. All valves closed, every MFC setpoint zero."
+            message = "Aborted. All valves closed, every flow zero."
             return Phase.ABORTED, message, worker.full_scales
         except Exception as error:
-            self._publish(phase=Phase.FINISHING, message="Error. Applying the safe state.")
+            self._publish(
+                phase=Phase.FINISHING, message="Error. Closing all valves, every flow to zero."
+            )
             problems = self._apply_final_state(labjack, worker, safe_state(self._rig), "safe_state")
             problems = [problem for problem in problems if problem != str(error)]
-            message = f"{error} " + (" ".join(problems) or "The safe state was applied.")
+            message = f"{error} " + (" ".join(problems) or "All valves closed, every flow zero.")
             return Phase.FAILED, message, worker.full_scales
 
     def _run_trials(self, order: list[str], labjack: Any, worker: _MfcWorker) -> bool:

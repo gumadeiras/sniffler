@@ -1,4 +1,4 @@
-"""The recipe editor: trials, steps, schedule, and the shutdown state."""
+"""The recipe editor: trials, steps, schedule, and the end state."""
 
 from itertools import pairwise
 
@@ -33,6 +33,9 @@ from sniffler.gui.icons import icon
 from sniffler.gui.pulse_dialog import PulseTrainDialog
 from sniffler.gui.step_table import StepDelegate, StepRow, StepTableModel
 from sniffler.recipe import ORDERINGS, Recipe, RigMap, Schedule, Step, Trial, recipe_problems
+
+# The recipe file keeps the ordering keys; the window shows them in plain words.
+ORDERING_LABELS = {"block-randomized": "shuffled in blocks", "as-listed": "as listed"}
 
 
 class _TrialData:
@@ -123,17 +126,21 @@ class RecipeEditor(QWidget):
         self._schedule.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._schedule.verticalHeader().setVisible(False)
         self._ordering = QComboBox()
-        self._ordering.addItems(ORDERINGS)
+        for value in ORDERINGS:
+            self._ordering.addItem(ORDERING_LABELS.get(value, value), value)
         self._seed = QLineEdit()
         self._seed.setValidator(QIntValidator(0, 2_000_000_000, self._seed))
         self._seed.setPlaceholderText("random when empty")
+        self._seed.setToolTip(
+            "Empty: a new random trial order for each run. A number: the same order every run."
+        )
         self._confirm = QMessageBox.question
 
         self._shutdown = StepTableModel(rig, with_duration=False, parent=self)
         self._shutdown.set_rows([self._shutdown.blank_row()])
         self._shutdown_view = _step_view(self._shutdown)
         self._shutdown_view.setMaximumHeight(3 * theme.ROW_PX + 2)
-        self._shutdown_view.setAccessibleName("Shutdown state")
+        self._shutdown_view.setAccessibleName("End state")
 
         self._problems = QLabel()
         self._problems.setWordWrap(True)
@@ -185,7 +192,7 @@ class RecipeEditor(QWidget):
         schedule_layout.addRow("Ordering", self._ordering)
         schedule_layout.addRow("Seed", self._seed)
 
-        shutdown_box = _section("Shutdown state, after the last trial or after Stop")
+        shutdown_box = _section("End state, after the last trial or after Stop")
         shutdown_layout = QVBoxLayout(shutdown_box)
         shutdown_layout.addWidget(self._shutdown_view)
 
@@ -260,7 +267,7 @@ class RecipeEditor(QWidget):
         self._step_down.clicked.connect(lambda: self._on_move_step(1))
         self._pulse_train.clicked.connect(self._on_pulse_train)
         self._schedule.cellChanged.connect(self._on_count_changed)
-        self._ordering.currentTextChanged.connect(self._emit_changed)
+        self._ordering.currentIndexChanged.connect(self._emit_changed)
         self._seed.textChanged.connect(self._emit_changed)
         self._shutdown.dataChanged.connect(self._emit_changed)
 
@@ -288,7 +295,7 @@ class RecipeEditor(QWidget):
             self._name.setText("")
             self._notes.setPlainText("")
             self._trials = [_TrialData("trial 1", [self._steps.blank_row()], 1)]
-            self._ordering.setCurrentText("block-randomized")
+            self._ordering.setCurrentIndex(self._ordering.findData("block-randomized"))
             self._seed.setText("")
             self._shutdown.set_rows([self._shutdown.blank_row()])
         else:
@@ -302,7 +309,9 @@ class RecipeEditor(QWidget):
                 )
                 for trial in recipe.trials
             ]
-            self._ordering.setCurrentText(recipe.schedule.ordering)
+            self._ordering.setCurrentIndex(
+                max(0, self._ordering.findData(recipe.schedule.ordering))
+            )
             seed = recipe.schedule.seed
             self._seed.setText("" if seed is None else str(seed))
             self._shutdown.set_rows([StepRow.from_step(recipe.shutdown)])
@@ -324,7 +333,7 @@ class RecipeEditor(QWidget):
         seed = int(seed_text) if seed_text.isdigit() else None
         schedule = Schedule(
             counts={trial.name: trial.count for trial in self._trials},
-            ordering=self._ordering.currentText(),
+            ordering=self._ordering.currentData(),
             seed=seed,
         )
         shutdown_rows = self._shutdown.steps()

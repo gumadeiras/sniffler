@@ -193,19 +193,19 @@ def safe_state(rig: RigMap) -> Step:
 def setpoint_problem(value: object, mfc: MfcMap) -> str | None:
     """Return why a setpoint is not allowed for this MFC, or None when it is."""
     if isinstance(value, bool) or not isinstance(value, int | float):
-        return "The setpoint must be a number."
+        return "The target flow must be a number."
     if not math.isfinite(value):
-        return "The setpoint must be finite."
+        return "The target flow must be finite."
     applied = normalize_alicat_flow(float(value))
     unit = mfc.flow_unit
     if applied < 0 and not mfc.allow_negative_flow:
         return f"Negative flow is disabled for {mfc.name} in lab.toml."
     if applied < mfc.minimum_flow:
-        return f"The setpoint must be at least {mfc.minimum_flow:g} {unit}."
+        return f"The target flow must be at least {mfc.minimum_flow:g} {unit}."
     if mfc.maximum_flow is not None and applied > mfc.maximum_flow:
-        return f"The setpoint must be at most the lab.toml limit of {mfc.maximum_flow:g} {unit}."
+        return f"The target flow must be at most the lab.toml limit of {mfc.maximum_flow:g} {unit}."
     if mfc.full_scale is not None and abs(applied) > mfc.full_scale:
-        return f"The setpoint exceeds the device full scale of {mfc.full_scale:g} {unit}."
+        return f"The target flow is more than the device maximum of {mfc.full_scale:g} {unit}."
     return None
 
 
@@ -222,7 +222,7 @@ def _step_problems(step: Step, rig: RigMap, location: str, shutdown: bool) -> li
     problems: list[str] = []
     if shutdown:
         if step.duration_seconds is not None:
-            problems.append(f"{location}: the shutdown state has no duration.")
+            problems.append(f"{location}: the end state has no duration.")
     elif (problem := duration_problem(step.duration_seconds)) is not None:
         problems.append(f"{location}: {problem}")
 
@@ -237,7 +237,7 @@ def _step_problems(step: Step, rig: RigMap, location: str, shutdown: bool) -> li
     for name in sorted(step.setpoints.keys() - rig.mfcs.keys()):
         problems.append(f"{location}: unknown MFC {name!r}. Add it to [alicat.{name}] in lab.toml.")
     for name in sorted(rig.mfcs.keys() - step.setpoints.keys()):
-        problems.append(f"{location}: MFC {name!r} has no setpoint.")
+        problems.append(f"{location}: MFC {name!r} has no target flow.")
     for name, value in step.setpoints.items():
         if name in rig.mfcs and (problem := setpoint_problem(value, rig.mfcs[name])) is not None:
             problems.append(f"{location}: MFC {name!r}: {problem}")
@@ -266,7 +266,7 @@ def recipe_problems(recipe: Recipe, rig: RigMap) -> list[str]:
             location = f"Trial {label!r}, step {step_index}"
             problems.extend(_step_problems(step, rig, location, shutdown=False))
 
-    problems.extend(_step_problems(recipe.shutdown, rig, "Shutdown state", shutdown=True))
+    problems.extend(_step_problems(recipe.shutdown, rig, "End state", shutdown=True))
 
     schedule = recipe.schedule
     if schedule.ordering not in ORDERINGS:
