@@ -25,10 +25,10 @@ allow_negative_flow = false
 # Friendly valve names for recipes. The value is the LabJack digital channel:
 # 8-15 is EIO0-EIO7 (PS12DC switches S0-S7), 16-19 is CIO0-CIO3 (S8-S11).
 [valves]
-odor-1 = 8
-odor-2 = 9
-odor-3 = 10
-odor-4 = 11
+A = 8
+B = 9
+C = 10
+D = 11
 
 # Optional. Run directories are written here, relative to this file.
 # [runs]

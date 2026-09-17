@@ -130,8 +130,10 @@ channel of the PS12DC switch that drives the valve:
 
 ```toml
 [valves]
-odor-1 = 8
-odor-2 = 9
+A = 8
+B = 9
+C = 10
+D = 11
 ```
 
 Recipes switch valves by name only. The GUI shows this map read-only and does
