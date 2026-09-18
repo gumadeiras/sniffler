@@ -431,5 +431,5 @@ uv build
 
 The automated tests use fake LabJack hardware and the Alicat package's mock
 serial client. They do not send commands to physical hardware. The GUI tests
-run under the offscreen Qt platform. Cross-platform CI tests the Python layer,
+run under the offscreen Qt platform. CI on macOS and Windows tests the Python layer,
 package build, command routing, and driver protocol logic.
