@@ -113,8 +113,13 @@ class RunLock:
                 "started_at": wall_time_now(),
             }
         )
+        # Keep the directory step out of the FileExistsError handler: on Windows a
+        # mkdir under a plain file raises FileExistsError, which is not a held lock.
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise RunLockError(f"Cannot create the run lock {self.path}: {error}") from error
+        try:
             with self.path.open("x", encoding="utf-8") as file:
                 file.write(content + "\n")
         except FileExistsError as error:

@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from sniffler.runlog import (
     LOCK_FILE_NAME,
@@ -51,6 +51,18 @@ class RunLockTests(unittest.TestCase):
 
             with self.assertRaisesRegex(RunLockError, "Cannot create the run lock"):
                 RunLock(blocker / "runs", blocker / "runs" / "x").acquire()
+
+    def test_a_directory_that_exists_as_a_file_is_not_a_held_lock(self) -> None:
+        # On Windows a mkdir under a plain file raises FileExistsError, the error a
+        # held lock file raises; force it here so every platform covers that path.
+        with tempfile.TemporaryDirectory() as directory:
+            runs = Path(directory, "runs")
+            with (
+                patch.object(Path, "mkdir", side_effect=FileExistsError(17, "exists")),
+                self.assertRaisesRegex(RunLockError, "Cannot create the run lock"),
+            ):
+                RunLock(runs, runs / "x").acquire()
+            self.assertIsNone(active_run(runs))
 
     def test_reports_an_unreadable_lock_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
