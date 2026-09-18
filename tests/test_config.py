@@ -92,8 +92,11 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(settings.runs_directory, Path(directory, "data/runs"))
 
     def test_absolute_and_home_runs_directories_are_used_as_written(self) -> None:
+        # A path with a root but no drive is not absolute on Windows, so build one
+        # that is absolute on the platform that runs the test.
+        absolute = Path(tempfile.gettempdir()).resolve() / "odor-runs"
         for written, expected in (
-            ("/data/odor-runs", Path("/data/odor-runs")),
+            (absolute.as_posix(), absolute),
             ("~/odor-runs", Path.home() / "odor-runs"),
         ):
             with self.subTest(directory=written), tempfile.TemporaryDirectory() as directory:

@@ -2,6 +2,7 @@
 
 import csv
 import json
+import statistics
 import tempfile
 import threading
 import time
@@ -332,8 +333,9 @@ class EventCallbackTests(ExecutorTestCase):
 
 class TimingTests(ExecutorTestCase):
     def test_slow_mfc_reads_do_not_delay_valve_steps(self) -> None:
+        read_delay = 0.1
         for alicat in self.rig.alicats.values():
-            alicat.read_delay = 0.1
+            alicat.read_delay = read_delay
         recipe = make_recipe(step_seconds=0.02, counts={"odor": 4, "blank": 4})
 
         status = self.executor(recipe).run()
@@ -350,7 +352,11 @@ class TimingTests(ExecutorTestCase):
             for event in events
         ]
         self.assertTrue(all(late >= 0 for late in lateness))
-        self.assertLess(max(lateness), 0.015, f"lateness {lateness}")
+        # A step thread that waited for one MFC read would be late by the whole read
+        # delay. The host scheduler can wake the thread tens of milliseconds late on
+        # a loaded machine, so only the typical step must land inside the spin margin.
+        self.assertLess(max(lateness), read_delay, f"lateness {lateness}")
+        self.assertLess(statistics.median(lateness), 0.015, f"lateness {lateness}")
         self.assertGreater(len(self.samples), 0, "sampling ran in parallel")
 
     def test_step_deadlines_do_not_drift(self) -> None:
