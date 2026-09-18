@@ -494,6 +494,22 @@ class TriggerTests(ExecutorTestCase):
         self.assertEqual(manifest["sync_pulses"], 0)
         self.assertTrue(labjack.counter_restored)
 
+    def test_a_failure_while_arming_still_restores_the_counter(self) -> None:
+        labjack = self.rig.labjack
+
+        def read_digital(channel):
+            raise DeviceError("line read failed")
+
+        labjack.read_digital = read_digital
+
+        status = self.executor(rig=RIG_WITH_TRIGGER).run()
+
+        self.assertEqual(status.phase, Phase.FAILED, status.message)
+        self.assertIn("line read failed", status.message)
+        self.assertEqual(labjack.counter_channel, 4)
+        self.assertTrue(labjack.counter_restored)
+        self.assertEqual(self.final_valves(), {8: False, 9: False, 16: False})
+
     def test_abort_during_the_wait_forces_the_safe_state(self) -> None:
         executor = self.executor(rig=RIG_WITH_TRIGGER, wait_for_trigger=True)
         executor.start()

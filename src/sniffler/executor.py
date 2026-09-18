@@ -569,7 +569,8 @@ class Executor:
             )
         elif worker.error:
             problems.append(worker.error)
-        if self._sync is not None:
+        if self._rig.trigger is not None:
+            # Also when arming failed halfway: the session restores only what it enabled.
             try:
                 labjack.disable_counter()
                 self._record("counter_restored", device=self._trigger_line())
