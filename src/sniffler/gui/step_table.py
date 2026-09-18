@@ -12,7 +12,7 @@ from PySide6.QtCore import (
     QRectF,
     Qt,
 )
-from PySide6.QtGui import QBrush, QColor, QDoubleValidator, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QBrush, QColor, QDoubleValidator, QPainter
 from PySide6.QtWidgets import (
     QLineEdit,
     QStyle,
@@ -260,8 +260,10 @@ def _parse_number(value: Any) -> float | None:
 class StepDelegate(QStyledItemDelegate):
     """Numbers only in duration and setpoint cells; one click anywhere toggles a valve cell.
 
-    A valve cell is painted here: a navy check box and the word open or closed,
-    centered as one group, the same on every platform and visible on a selected row.
+    A valve cell is painted here: a navy switch and the word open or closed, centered
+    as one group, the same on every platform and visible on a selected row. The label
+    names the state, so the switch is drawn rather than a check box: a check box reads
+    "not closed" when it is empty beside the word closed.
     """
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
@@ -275,32 +277,29 @@ class StepDelegate(QStyledItemDelegate):
         selected = bool(option.state & QStyle.State_Selected)
         ink = QColor(theme.PANEL if selected else theme.NAVY)
         fill = QColor(theme.NAVY if selected else theme.PANEL)
+        track_off = QColor(theme.INK_SOFT if selected else theme.LINE)
         is_open = model.data(index, Qt.CheckStateRole) == Qt.Checked
         text = "open" if is_open else "closed"
         metrics = option.fontMetrics
         gap = theme.UNIT // 2
-        group = theme.CHECK_PX + gap + metrics.horizontalAdvance("closed")
+        group = theme.SWITCH_W + gap + metrics.horizontalAdvance("closed")
         left = option.rect.center().x() - group / 2
-        box = QRectF(
-            left, option.rect.center().y() - theme.CHECK_PX / 2, theme.CHECK_PX, theme.CHECK_PX
+        track = QRectF(
+            left, option.rect.center().y() - theme.SWITCH_H / 2, theme.SWITCH_W, theme.SWITCH_H
         )
+        knob = theme.SWITCH_H - 4
+        knob_x = track.right() - knob - 2 if is_open else track.left() + 2
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(QPen(ink, 1.5))
-        painter.setBrush(ink if is_open else fill)
-        painter.drawRoundedRect(box, 3, 3)
-        if is_open:
-            mark = QPainterPath()
-            mark.moveTo(box.left() + box.width() * 0.22, box.top() + box.height() * 0.52)
-            mark.lineTo(box.left() + box.width() * 0.42, box.top() + box.height() * 0.72)
-            mark.lineTo(box.left() + box.width() * 0.80, box.top() + box.height() * 0.30)
-            painter.setPen(QPen(fill, 2.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-            painter.setBrush(Qt.NoBrush)
-            painter.drawPath(mark)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(ink if is_open else track_off)
+        painter.drawRoundedRect(track, theme.SWITCH_H / 2, theme.SWITCH_H / 2)
+        painter.setBrush(fill if is_open else QColor(theme.PANEL))
+        painter.drawEllipse(QRectF(knob_x, track.top() + 2, knob, knob))
         painter.setPen(ink)
         painter.setFont(option.font)
         painter.drawText(
-            QRectF(box.right() + gap, option.rect.top(), group, option.rect.height()),
+            QRectF(track.right() + gap, option.rect.top(), group, option.rect.height()),
             Qt.AlignLeft | Qt.AlignVCenter,
             text,
         )

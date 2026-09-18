@@ -51,7 +51,9 @@ TITLE_PX = 18
 DISPLAY_PX = 34
 
 ICON_PX = 20
-CHECK_PX = 16  # the painted check box in valve cells and the QCheckBox indicator
+CHECK_PX = 16  # the QCheckBox indicator
+SWITCH_W = 28  # the painted switch in valve cells: track width and height
+SWITCH_H = 16
 CHECK_MARK = (ASSETS / "icons" / "check-white.svg").as_posix()
 # Measured platform metric: the Fusion check box is 14 px high plus the text
 # line; 28 px keeps a valve cell one click tall without clipping the box.

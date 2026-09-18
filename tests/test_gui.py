@@ -264,7 +264,7 @@ class EditingTests(GuiTestCase):
         index = model.index(1, 1)  # odor-1 in step 2, closed
         self.assertEqual(model.data(index, Qt.CheckStateRole), Qt.Unchecked)
         rect = view.visualRect(index)
-        point = QPointF(rect.right() - 4, rect.center().y())  # far from the check box
+        point = QPointF(rect.right() - 4, rect.center().y())  # far from the switch
 
         for event_type in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease):
             event = QMouseEvent(
