@@ -37,6 +37,7 @@ def reduce_motion() -> bool:
                 capture_output=True,
                 text=True,
                 timeout=2,
+                check=False,
             )
             return result.stdout.strip() == "1"
         if sys.platform == "win32":
@@ -110,7 +111,7 @@ class SniffWidget(QWidget):
 
     def set_phase(self, phase: Phase) -> None:
         self._phase = phase
-        if phase in {Phase.STARTING}:
+        if phase == Phase.STARTING:
             self.clear()
         self.update()
 

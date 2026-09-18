@@ -175,7 +175,7 @@ class RunLog:
         target = self.directory / MANIFEST_NAME
         temporary = target.with_suffix(".json.tmp")
         temporary.write_text(json.dumps(self._manifest, indent=2) + "\n", encoding="utf-8")
-        os.replace(temporary, target)
+        temporary.replace(target)
 
     def event(
         self,

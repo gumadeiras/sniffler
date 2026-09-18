@@ -166,7 +166,7 @@ class DemoTests(unittest.TestCase):
         self.assertAlmostEqual(status.trigger_seconds, demo.PULSES.first_seconds, delta=0.5)
         self.assertGreaterEqual(status.sync_pulses, 1, "the train continues through the trials")
         self.assertGreaterEqual(len(window.run_view.timeline._marks), 1)
-        with open(status.run_directory / "events.csv", newline="") as handle:
+        with (status.run_directory / "events.csv").open(newline="") as handle:
             events = {row["event"]: row for row in csv.DictReader(handle)}
         self.assertEqual(events["trigger_received"]["value"], "received")
         self.assertEqual(events["trigger_received"]["sync_count"], "")

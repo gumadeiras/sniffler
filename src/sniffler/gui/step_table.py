@@ -325,7 +325,7 @@ class StepDelegate(QStyledItemDelegate):
         return super().editorEvent(event, model, option, index)
 
     def createEditor(
-        self, parent: QWidget, option: QStyleOptionViewItem, index: QModelIndex
+        self, parent: QWidget, _option: QStyleOptionViewItem, _index: QModelIndex
     ) -> QWidget:
         editor = QLineEdit(parent)
         validator = QDoubleValidator(-1e9, 1e9, 6, editor)

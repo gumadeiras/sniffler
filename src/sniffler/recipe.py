@@ -241,20 +241,26 @@ def _step_problems(step: Step, rig: RigMap, location: str, shutdown: bool) -> li
     elif (problem := duration_problem(step.duration_seconds)) is not None:
         problems.append(f"{location}: {problem}")
 
-    for name in sorted(step.valves.keys() - rig.valves.keys()):
-        problems.append(f"{location}: unknown valve {name!r}. Add it to [valves] in lab.toml.")
-    for name in sorted(rig.valves.keys() - step.valves.keys()):
-        problems.append(f"{location}: valve {name!r} has no state.")
+    problems.extend(
+        f"{location}: unknown valve {name!r}. Add it to [valves] in lab.toml."
+        for name in sorted(step.valves.keys() - rig.valves.keys())
+    )
+    problems.extend(
+        f"{location}: valve {name!r} has no state."
+        for name in sorted(rig.valves.keys() - step.valves.keys())
+    )
     for name, state in step.valves.items():
         if not isinstance(state, bool):
             problems.append(f"{location}: valve {name!r} must be open or closed.")
 
-    for name in sorted(step.setpoints.keys() - rig.mfcs.keys()):
-        problems.append(
-            f"{location}: unknown MFC {name!r}. Add it to [alicat.{_toml_key(name)}] in lab.toml."
-        )
-    for name in sorted(rig.mfcs.keys() - step.setpoints.keys()):
-        problems.append(f"{location}: MFC {name!r} has no target flow.")
+    problems.extend(
+        f"{location}: unknown MFC {name!r}. Add it to [alicat.{_toml_key(name)}] in lab.toml."
+        for name in sorted(step.setpoints.keys() - rig.mfcs.keys())
+    )
+    problems.extend(
+        f"{location}: MFC {name!r} has no target flow."
+        for name in sorted(rig.mfcs.keys() - step.setpoints.keys())
+    )
     for name, value in step.setpoints.items():
         if name in rig.mfcs and (problem := setpoint_problem(value, rig.mfcs[name])) is not None:
             problems.append(f"{location}: MFC {name!r}: {problem}")
@@ -284,9 +290,11 @@ def recipe_problems(recipe: Recipe, rig: RigMap) -> list[str]:
             problems.extend(_step_problems(step, rig, location, shutdown=False))
 
     problems.extend(_step_problems(recipe.shutdown, rig, "End state", shutdown=True))
-    for name in recipe.valve_contents:
-        if name not in rig.valves:
-            problems.append(f"Valve contents: unknown valve {name!r}.")
+    problems.extend(
+        f"Valve contents: unknown valve {name!r}."
+        for name in recipe.valve_contents
+        if name not in rig.valves
+    )
 
     schedule = recipe.schedule
     if schedule.ordering not in ORDERINGS:

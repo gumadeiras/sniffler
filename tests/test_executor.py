@@ -380,7 +380,7 @@ class TimingTests(ExecutorTestCase):
     def test_status_reports_progress_from_the_worker_thread(self) -> None:
         executor = self.executor(make_recipe(step_seconds=0.05))
         seen_threads: set[str] = set()
-        executor._on_status = lambda status: seen_threads.add(threading.current_thread().name)
+        executor._on_status = lambda _status: seen_threads.add(threading.current_thread().name)
         executor.start()
         executor.join(10)
 
@@ -558,7 +558,7 @@ class TriggerTests(ExecutorTestCase):
     def test_a_failure_while_arming_still_restores_the_counter(self) -> None:
         labjack = self.rig.labjack
 
-        def read_digital(channel):
+        def read_digital(_channel):
             raise DeviceError("line read failed")
 
         labjack.read_digital = read_digital

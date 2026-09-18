@@ -353,7 +353,7 @@ def check_trigger(bench: Bench) -> Result:
                         f"count after the loop-back rose: {after_rise}; after it fell: "
                         f"{after_fall}; the counter counts the {edge} edge"
                     )
-                    if after_fall not in (1,):
+                    if after_fall != 1:
                         lines.append("one full pulse should count exactly once")
                 else:
                     bench.ask("Send one TTL pulse to the trigger line, then press Return: ")

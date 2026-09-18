@@ -59,7 +59,7 @@ class FakeLabJack:
         self.counter_error: str | None = None
         self.poll_error: str | None = None
 
-    def read_digital(self, channel: int) -> tuple[bool, bool]:
+    def read_digital(self, _channel: int) -> tuple[bool, bool]:
         return True, self.input_level
 
     def timer_counter_configuration(self) -> dict[str, object]:
@@ -182,7 +182,7 @@ class FakeRig:
         self.labjack_error: str | None = None
 
     @contextmanager
-    def open_labjack(self, serial_number):
+    def open_labjack(self, _serial_number):
         self.labjack_opens += 1
         if self.labjack_error:
             raise DeviceError(self.labjack_error)
@@ -195,13 +195,13 @@ class FakeRig:
         return next(alicat for alicat in self.alicats.values() if alicat.name in port)
 
     @asynccontextmanager
-    async def open_alicat(self, port, unit, baud_rate, timeout_seconds):
+    async def open_alicat(self, port, _unit, _baud_rate, _timeout_seconds):
         alicat = self._alicat_for(port)
         try:
             yield alicat
         finally:
             alicat.closed = True
 
-    async def read_full_scale(self, port, unit, baud_rate, timeout_seconds) -> tuple[float, str]:
+    async def read_full_scale(self, port, _unit, _baud_rate, _timeout_seconds) -> tuple[float, str]:
         """Stand-in for hardware.alicat_full_scale."""
         return self._alicat_for(port).full_scale, "SCCM"
