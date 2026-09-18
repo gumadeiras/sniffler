@@ -28,19 +28,19 @@ class AlicatSettings:
 
 
 DIGITAL_OUTPUT_CHANNELS = range(4, 20)
-TRIGGER_EDGES = ("rising", "falling")
+# The U3 places its hardware counter on FIO4 through EIO0.
+TRIGGER_CHANNELS = range(4, 9)
 
 
 @dataclass(frozen=True)
 class TriggerSettings:
-    """A TTL input that can start the trial schedule of a run."""
+    """The TTL input whose pulses are recorded and can start the trial schedule."""
 
     channel: int
-    edge: str = "rising"
     timeout_seconds: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"channel": self.channel, "edge": self.edge, "timeout_seconds": self.timeout_seconds}
+        return {"channel": self.channel, "timeout_seconds": self.timeout_seconds}
 
 
 @dataclass(frozen=True)
@@ -158,12 +158,11 @@ def _parse_valves(valves: dict[str, Any]) -> dict[str, int]:
 def _parse_trigger(trigger: dict[str, Any]) -> TriggerSettings | None:
     if not trigger:
         return None
-    _reject_unknown(trigger, {"channel", "edge", "timeout_seconds"}, "[trigger]")
+    _reject_unknown(trigger, {"channel", "timeout_seconds"}, "[trigger]")
     if "channel" not in trigger:
         raise ConfigError("Set trigger.channel to the digital channel that receives the TTL.")
     return TriggerSettings(
         channel=_value(trigger, "channel", int, None),
-        edge=_value(trigger, "edge", str, "rising"),
         timeout_seconds=_value(trigger, "timeout_seconds", float, None),
     )
 
@@ -205,13 +204,13 @@ def _validate(settings: Settings) -> None:
         raise ConfigError("labjack.serial must be greater than zero.")
     trigger = settings.trigger
     if trigger is not None:
-        if trigger.channel not in DIGITAL_OUTPUT_CHANNELS:
-            raise ConfigError("trigger.channel must be a digital channel from 4 through 19.")
+        if trigger.channel not in TRIGGER_CHANNELS:
+            raise ConfigError(
+                "trigger.channel must be 4 through 8 (FIO4 to EIO0), where the U3 counts pulses."
+            )
         used = [name for name, channel in settings.valves.items() if channel == trigger.channel]
         if used:
             raise ConfigError(f"trigger.channel {trigger.channel} is also the valve {used[0]!r}.")
-        if trigger.edge not in TRIGGER_EDGES:
-            raise ConfigError("trigger.edge must be rising or falling.")
         timeout = trigger.timeout_seconds
         if timeout is not None and (not math.isfinite(timeout) or timeout <= 0):
             raise ConfigError("trigger.timeout_seconds must be finite and greater than zero.")

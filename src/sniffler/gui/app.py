@@ -102,8 +102,7 @@ class RigPanel(QWidget):
                     "TTL trigger",
                     "input",
                     f"channel {trigger.channel} ({line})",
-                    f"{trigger.edge} edge"
-                    + (", no time limit" if timeout is None else f", timeout {timeout:g} s"),
+                    "no time limit" if timeout is None else f"timeout {timeout:g} s",
                 )
             )
         for name, mfc in rig.mfcs.items():
@@ -189,8 +188,8 @@ class MainWindow(QMainWindow):
         else:
             line = hardware.digital_channel_name(trigger.channel)
             self.trigger_box.setToolTip(
-                f"Hold the recipe end state until the {trigger.edge} edge on {line}, "
-                "then start the trials. The line and edge are set in lab.toml; see Config."
+                f"Hold the recipe end state until the first TTL pulse on {line}, "
+                "then start the trials. The line is set in lab.toml; see Config."
             )
             self.trigger_box.setChecked(self._store.value("wait_for_trigger", False, type=bool))
             self.trigger_box.toggled.connect(

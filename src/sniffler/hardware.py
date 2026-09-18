@@ -127,6 +127,7 @@ class LabJackSession:
 
     def __init__(self, device: Any) -> None:
         self._device = device
+        self._counter_previous: dict[str, Any] | None = None
         try:
             self._configuration = device.configU3()
         except Exception as error:
@@ -200,17 +201,59 @@ class LabJackSession:
             raise DeviceError(f"Cannot read {name}: {error}") from error
         return not bool(direction), bool(level)
 
-    def configure_input(self, channel: int) -> None:
-        """Make a digital line an input. Call this once, on purpose, for a trigger line."""
+    def enable_counter(self, channel: int) -> None:
+        """Count pulses on a digital line with hardware counter 0.
+
+        This changes the U3 timer and counter configuration on purpose; call
+        ``disable_counter`` to put it back. The U3 can place the counter on FIO4
+        through EIO0 only.
+        """
         name = self._require_digital(channel)
+        if channel not in range(4, 9):
+            raise DeviceError(f"{name} cannot host the pulse counter; use FIO4 through EIO0.")
+        try:
+            previous = self._device.configIO()
+            self._device.configIO(
+                EnableCounter0=True, NumberOfTimersEnabled=0, TimerCounterPinOffset=channel
+            )
+        except Exception as error:
+            raise DeviceError(
+                f"Cannot enable the pulse counter on {name}; "
+                f"the U3 timer and counter configuration might have changed: {error}"
+            ) from error
+        self._counter_previous = {
+            key: previous[key]
+            for key in (
+                "EnableCounter0",
+                "EnableCounter1",
+                "NumberOfTimersEnabled",
+                "TimerCounterPinOffset",
+            )
+        }
+
+    def disable_counter(self) -> None:
+        """Restore the timer and counter configuration that ``enable_counter`` replaced."""
+        previous = self._counter_previous
+        if previous is None:
+            return
+        try:
+            self._device.configIO(**previous)
+        except Exception as error:
+            raise DeviceError(
+                "Cannot restore the U3 timer and counter configuration; "
+                f"it might have changed: {error}"
+            ) from error
+        self._counter_previous = None
+
+    def read_counter(self, reset: bool = False) -> int:
+        """Return the pulse count of counter 0, and reset it when asked."""
         import u3
 
         try:
-            self._device.getFeedback(u3.BitDirWrite(IONumber=channel, Direction=0))
+            (count,) = self._device.getFeedback(u3.Counter(counter=0, Reset=reset))
         except Exception as error:
-            raise DeviceError(
-                f"Cannot make {name} an input; its direction might have changed: {error}"
-            ) from error
+            raise DeviceError(f"Cannot read the pulse counter: {error}") from error
+        return int(count)
 
     def write_digital_lines(self, states: dict[int, bool]) -> None:
         """Set several digital output lines in one device transaction.

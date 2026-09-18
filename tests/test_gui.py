@@ -465,13 +465,13 @@ class MainWindowTests(GuiTestCase):
         self.process_events()
         self.assertFalse(window.trigger_box.isHidden())
         self.assertEqual(window.trigger_box.text(), "Wait for TTL")
-        self.assertIn("rising edge on FIO4", window.trigger_box.toolTip())
+        self.assertIn("first TTL pulse on FIO4", window.trigger_box.toolTip())
         table = window.rig_panel._table
         trigger_row = next(
             row for row in range(table.rowCount()) if table.item(row, 0).text() == "TTL trigger"
         )
         self.assertEqual(table.item(trigger_row, 2).text(), "channel 4 (FIO4)")
-        self.assertEqual(table.item(trigger_row, 3).text(), "rising edge, no time limit")
+        self.assertEqual(table.item(trigger_row, 3).text(), "no time limit")
         self.assertFalse(window.trigger_box.isChecked())
         window.trigger_box.setChecked(True)
         self.assertTrue(self.store().value("wait_for_trigger", type=bool))
@@ -485,7 +485,7 @@ class MainWindowTests(GuiTestCase):
         self.assertTrue(window.abort_button.isEnabled())
         self.assertIn("waiting for the trigger", window.run_view.status_panel._time.text())
         self.assertEqual(window.run_view.timeline._cursor, 0.0, "the schedule has not started")
-        self.assertEqual(self.rig.labjack.inputs_configured, [4])
+        self.assertEqual(self.rig.labjack.counter_channel, 4)
         self.assertEqual(self.rig.labjack.writes[0][1], {8: False, 9: False, 16: True})
 
         window.start_now_button.click()

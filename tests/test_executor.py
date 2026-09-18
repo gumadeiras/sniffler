@@ -11,6 +11,7 @@ from pathlib import Path
 from sniffler.config import TriggerSettings
 from sniffler.executor import Event, Executor, Phase, Sample, Status
 from sniffler.fakes import FakeRig
+from sniffler.hardware import DeviceError
 from sniffler.recipe import MfcMap, Recipe, RigMap, Schedule, Step, Trial
 from sniffler.runlog import LOCK_FILE_NAME, RunLock
 
@@ -385,19 +386,25 @@ class TimingTests(ExecutorTestCase):
 
 
 class TriggerTests(ExecutorTestCase):
-    def test_waits_for_the_edge_then_starts_the_schedule_from_it(self) -> None:
-        self.rig.labjack.input_levels = [False] * 25 + [True]
+    def test_waits_for_the_pulse_then_starts_the_schedule_from_it(self) -> None:
+        self.rig.labjack.counts = [0] * 25 + [1]
 
         status = self.executor(rig=RIG_WITH_TRIGGER, wait_for_trigger=True).run()
 
         self.assertEqual(status.phase, Phase.DONE, status.message)
-        self.assertEqual(self.rig.labjack.inputs_configured, [4])
-        self.assertEqual(self.rig.labjack.input_reads, 26)
+        self.assertEqual(self.rig.labjack.counter_channel, 4)
+        self.assertTrue(self.rig.labjack.counter_restored)
         events = self.events(status)
         kinds = [event["event"] for event in events]
-        self.assertLess(kinds.index("run_start"), kinds.index("trigger_wait"))
-        self.assertLess(kinds.index("trigger_wait"), kinds.index("trigger_received"))
-        self.assertLess(kinds.index("trigger_received"), kinds.index("trial_start"))
+        for earlier, later in (
+            ("run_start", "counter_enabled"),
+            ("counter_enabled", "trigger_wait"),
+            ("trigger_wait", "trigger_received"),
+            ("trigger_received", "trial_start"),
+            ("shutdown_state", "run_end"),
+        ):
+            self.assertLess(kinds.index(earlier), kinds.index(later), f"{earlier} before {later}")
+        self.assertLess(kinds.index("counter_restored"), kinds.index("shutdown_state"))
         received = events[kinds.index("trigger_received")]
         self.assertEqual(received["value"], "received")
         self.assertIn("26 reads", received["detail"])
@@ -411,15 +418,81 @@ class TriggerTests(ExecutorTestCase):
         self.assertGreater(trigger_seconds, 0.0)
         first_trial = events[kinds.index("trial_start")]
         self.assertEqual(float(first_trial["scheduled_run_seconds"]), trigger_seconds)
-        # The CSV keeps six decimals; the status and manifest keep the full float.
         self.assertAlmostEqual(status.trigger_seconds, trigger_seconds, places=6)
+        self.assertNotIn("sync_pulse", kinds, "the start pulse is not a sync mark")
+        self.assertEqual(status.sync_pulses, 0)
         manifest = self.manifest(status)
         self.assertTrue(manifest["wait_for_trigger"])
         self.assertEqual(manifest["trigger_seconds"], status.trigger_seconds)
+        self.assertEqual(manifest["sync_pulses"], 0)
+        self.assertIsNone(manifest["sync_recording_stopped_seconds"])
+        self.assertEqual(manifest["rig_map"]["trigger"], {"channel": 4, "timeout_seconds": None})
+
+    def test_records_every_sync_pulse_with_its_trial_and_step(self) -> None:
+        # Counts are read about every 5 ms while the run is idle; the third read
+        # sees one pulse and a later read sees two more at once.
+        self.rig.labjack.counts = [0, 0, 1, 1, 1, 1, 3]
+        recipe = make_recipe(step_seconds=0.1, counts={"odor": 1, "blank": 1})
+
+        status = self.executor(recipe, rig=RIG_WITH_TRIGGER).run()
+
+        self.assertEqual(status.phase, Phase.DONE, status.message)
+        events = self.events(status)
+        pulses = [event for event in events if event["event"] == "sync_pulse"]
+        self.assertEqual([event["value"] for event in pulses], ["1", "2", "3"])
         self.assertEqual(
-            manifest["rig_map"]["trigger"],
-            {"channel": 4, "edge": "rising", "timeout_seconds": None},
+            [event["detail"] for event in pulses],
+            ["", "2 pulses since the last read", "2 pulses since the last read"],
         )
+        self.assertEqual(pulses[1]["returned_run_seconds"], pulses[2]["returned_run_seconds"])
+        for event in pulses:
+            self.assertEqual(event["device"], "FIO4")
+            self.assertIn(event["trial_index"], {"0", "1"})
+            self.assertTrue(event["trial_name"])
+            self.assertTrue(event["step_index"])
+        self.assertEqual(status.sync_pulses, 3)
+        self.assertEqual(status.trigger_seconds, 0.0)
+        self.assertEqual(self.manifest(status)["sync_pulses"], 3)
+        self.assertGreater(self.rig.labjack.count_reads, 7)
+
+    def test_a_dead_counter_stops_the_record_and_the_run_goes_on(self) -> None:
+        self.rig.labjack.counter_error = "usb gone"
+        recipe = make_recipe(step_seconds=0.1, counts={"odor": 1, "blank": 1})
+
+        status = self.executor(recipe, rig=RIG_WITH_TRIGGER).run()
+
+        self.assertEqual(
+            status.phase, Phase.FAILED, "arming reads the counter once, so arming fails"
+        )
+        self.assertIn("usb gone", status.message)
+
+        # The counter dies after arming: the record stops, the trials finish.
+        self.rig = type(self.rig)()
+        labjack = self.rig.labjack
+        counts = iter([0, 0])
+
+        def read_counter(reset=False):
+            if reset:
+                return 0
+            try:
+                return next(counts)
+            except StopIteration:
+                raise DeviceError("usb gone") from None
+
+        labjack.read_counter = read_counter
+        status = self.executor(recipe, rig=RIG_WITH_TRIGGER).run()
+
+        self.assertEqual(status.phase, Phase.DONE, status.message)
+        events = self.events(status)
+        kinds = [event["event"] for event in events]
+        self.assertEqual(kinds.count("error"), 5)
+        self.assertEqual(kinds.count("sync_recording_stopped"), 1)
+        self.assertEqual(kinds.count("trial_end"), 2)
+        self.assertIsNotNone(status.sync_stopped_seconds)
+        manifest = self.manifest(status)
+        self.assertEqual(manifest["sync_recording_stopped_seconds"], status.sync_stopped_seconds)
+        self.assertEqual(manifest["sync_pulses"], 0)
+        self.assertTrue(labjack.counter_restored)
 
     def test_abort_during_the_wait_forces_the_safe_state(self) -> None:
         executor = self.executor(rig=RIG_WITH_TRIGGER, wait_for_trigger=True)
@@ -433,6 +506,7 @@ class TriggerTests(ExecutorTestCase):
         self.assertEqual(status.phase, Phase.ABORTED, status.message)
         self.assertEqual(self.final_valves(), {8: False, 9: False, 16: False})
         self.assertEqual(self.rig.alicats["mfc-500"].setpoints[-1], 0.0)
+        self.assertTrue(self.rig.labjack.counter_restored)
         kinds = [event["event"] for event in self.events(status)]
         self.assertNotIn("trial_start", kinds)
         self.assertNotIn("trigger_received", kinds)
@@ -452,6 +526,7 @@ class TriggerTests(ExecutorTestCase):
         self.assertIn("Stopped after trial 0 of 4", status.message)
         self.assertEqual(self.final_valves(), {8: False, 9: False, 16: True})
         self.assertEqual(self.rig.alicats["mfc-500"].setpoints[-1], 50.0)
+        self.assertTrue(self.rig.labjack.counter_restored)
         kinds = [event["event"] for event in self.events(status)]
         self.assertNotIn("trial_start", kinds)
         self.assertIn("trigger_end", kinds)
@@ -472,21 +547,18 @@ class TriggerTests(ExecutorTestCase):
             status.trigger_seconds, float(received["returned_run_seconds"]), places=6
         )
 
-    def test_timeout_and_a_floating_high_line_fail_safe(self) -> None:
-        rig = RigMap(
-            RIG.labjack_serial, RIG.valves, RIG.mfcs, TriggerSettings(4, timeout_seconds=0.05)
-        )
-        self.rig.labjack.input_levels = [True]
+    def test_timeout_fails_safe_and_restores_the_counter(self) -> None:
+        rig = RigMap(RIG.labjack_serial, RIG.valves, RIG.mfcs, TriggerSettings(4, 0.05))
 
         status = self.executor(rig=rig, wait_for_trigger=True).run()
 
         self.assertEqual(status.phase, Phase.FAILED, status.message)
-        self.assertIn("No rising edge on FIO4 within 0.05 s", status.message)
+        self.assertIn("No TTL pulse on FIO4 within 0.05 s", status.message)
         self.assertEqual(self.final_valves(), {8: False, 9: False, 16: False})
         self.assertEqual(self.rig.alicats["mfc-500"].setpoints[-1], 0.0)
+        self.assertTrue(self.rig.labjack.counter_restored)
         end = next(e for e in self.events(status) if e["event"] == "trigger_end")
         self.assertEqual(end["value"], "timed out")
-        self.assertIn("never showed the level before the edge", end["detail"])
 
     def test_wait_without_a_trigger_table_is_refused_before_hardware(self) -> None:
         status = self.executor(rig=RIG, wait_for_trigger=True).run()
@@ -496,14 +568,18 @@ class TriggerTests(ExecutorTestCase):
         self.assertEqual(self.rig.labjack_opens, 0)
         self.assertFalse(self.runs.exists())
 
-    def test_a_run_without_the_wait_never_touches_the_trigger_line(self) -> None:
-        status = self.executor(rig=RIG_WITH_TRIGGER).run()
+    def test_a_rig_without_a_trigger_line_never_touches_the_counter(self) -> None:
+        status = self.executor(rig=RIG).run()
 
         self.assertEqual(status.phase, Phase.DONE, status.message)
-        self.assertEqual(self.rig.labjack.input_reads, 0)
-        self.assertEqual(self.rig.labjack.inputs_configured, [])
+        self.assertEqual(self.rig.labjack.count_reads, 0)
+        self.assertIsNone(self.rig.labjack.counter_channel)
+        self.assertFalse(self.rig.labjack.counter_restored)
+        self.assertIsNone(status.sync_pulses)
         self.assertEqual(status.trigger_seconds, 0.0)
-        self.assertFalse(self.manifest(status)["wait_for_trigger"])
+        manifest = self.manifest(status)
+        self.assertFalse(manifest["wait_for_trigger"])
+        self.assertIsNone(manifest["sync_pulses"])
 
 
 if __name__ == "__main__":

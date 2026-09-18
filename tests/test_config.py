@@ -118,21 +118,20 @@ class ConfigurationTests(unittest.TestCase):
             self.load('[valves]\nodor = "EIO0"\n')
 
     def test_loads_the_trigger_and_checks_its_channel(self) -> None:
-        settings = self.load(
-            '[valves]\nA = 8\n\n[trigger]\nchannel = 4\nedge = "falling"\ntimeout_seconds = 30\n'
-        )
+        settings = self.load("[valves]\nA = 8\n\n[trigger]\nchannel = 4\ntimeout_seconds = 30\n")
 
-        self.assertEqual(settings.trigger, TriggerSettings(4, "falling", 30.0))
+        self.assertEqual(settings.trigger, TriggerSettings(4, 30.0))
         self.assertIsNone(self.load("[labjack]\nserial = 1\n").trigger)
         self.assertEqual(self.load("[trigger]\nchannel = 5\n").trigger, TriggerSettings(5))
         with self.assertRaisesRegex(ConfigError, "also the valve 'A'"):
             self.load("[valves]\nA = 8\n\n[trigger]\nchannel = 8\n")
-        with self.assertRaisesRegex(ConfigError, "rising or falling"):
-            self.load('[trigger]\nchannel = 4\nedge = "up"\n')
+        with self.assertRaisesRegex(ConfigError, "Unknown setting in \\[trigger\\]: edge"):
+            self.load('[trigger]\nchannel = 4\nedge = "rising"\n')
         with self.assertRaisesRegex(ConfigError, "Set trigger.channel"):
-            self.load('[trigger]\nedge = "rising"\n')
-        with self.assertRaisesRegex(ConfigError, "4 through 19"):
-            self.load("[trigger]\nchannel = 2\n")
+            self.load("[trigger]\ntimeout_seconds = 3\n")
+        for channel in (2, 9, 16):
+            with self.assertRaisesRegex(ConfigError, "4 through 8"):
+                self.load(f"[trigger]\nchannel = {channel}\n")
         with self.assertRaisesRegex(ConfigError, "timeout_seconds"):
             self.load("[trigger]\nchannel = 4\ntimeout_seconds = 0\n")
 

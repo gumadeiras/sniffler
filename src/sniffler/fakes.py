@@ -25,18 +25,31 @@ class FakeLabJack:
         self.fail_on_write: int | None = None
         self.write_delay = 0.0
         self.closed = False
-        # The trigger input: one level per read, the last level held forever.
-        self.input_levels: list[bool] = [False]
-        self.input_reads = 0
-        self.inputs_configured: list[int] = []
-
-    def configure_input(self, channel: int) -> None:
-        self.inputs_configured.append(channel)
+        self.input_level = False
+        # The pulse counter: one count per read, the last count held forever.
+        self.counts: list[int] = [0]
+        self.count_reads = 0
+        self.counter_channel: int | None = None
+        self.counter_restored = False
+        self.counter_error: str | None = None
 
     def read_digital(self, channel: int) -> tuple[bool, bool]:
-        level = self.input_levels[min(self.input_reads, len(self.input_levels) - 1)]
-        self.input_reads += 1
-        return True, level
+        return True, self.input_level
+
+    def enable_counter(self, channel: int) -> None:
+        self.counter_channel = channel
+
+    def disable_counter(self) -> None:
+        self.counter_restored = True
+
+    def read_counter(self, reset: bool = False) -> int:
+        if self.counter_error is not None:
+            raise DeviceError(self.counter_error)
+        if reset:
+            return 0
+        count = self.counts[min(self.count_reads, len(self.counts) - 1)]
+        self.count_reads += 1
+        return count
 
     def write_digital_lines(self, states: dict[int, bool]) -> None:
         if self.fail_on_write is not None and len(self.writes) == self.fail_on_write:

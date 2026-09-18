@@ -35,9 +35,11 @@ from sniffler.runlog import (
     new_run_directory,
     wall_time_now,
 )
-from sniffler.trigger import TriggerOutcome, wait_for_trigger
+from sniffler.trigger import READ_FAILURE_LIMIT, SyncRecorder, TriggerOutcome, wait_for_trigger
 
 SPIN_SECONDS = 0.015
+# No counter poll starts closer than this to a deadline: spin window plus one round trip.
+SYNC_MARGIN_SECONDS = 0.03
 MFC_WORKER_TIMEOUT_SECONDS = 15.0
 DEFAULT_SAMPLE_INTERVAL_SECONDS = 0.1
 
@@ -106,6 +108,9 @@ class Status:
     # Run seconds at which the trial schedule started: 0.0 for a run that did not
     # wait, the trigger time for one that did, None until the trials start.
     trigger_seconds: float | None = None
+    # Sync pulses recorded so far; None when the rig has no trigger line.
+    sync_pulses: int | None = None
+    sync_stopped_seconds: float | None = None
 
     @property
     def trial_name(self) -> str | None:
@@ -160,6 +165,7 @@ class Executor:
         self._log: RunLog | None = None
         self._started_at: float | None = None
         self._schedule_offset = 0.0
+        self._sync: SyncRecorder | None = None
         self._last_valves: dict[str, bool] | None = None
         self._last_setpoints: dict[str, float] = {}
 
@@ -261,6 +267,10 @@ class Executor:
             outcome=phase.value,
             message=message,
             trigger_seconds=self.status.trigger_seconds,
+            sync_pulses=None if self._sync is None else self._sync.pulses,
+            sync_recording_stopped_seconds=None
+            if self._sync is None
+            else self._sync.stopped_seconds,
             mfc_full_scales={name: list(scale) for name, scale in full_scales.items()},
         )
         self._log = None
@@ -292,6 +302,8 @@ class Executor:
                 raise DeviceError(worker.error or "The MFCs are not ready.")
             self._started_at = self._clock()
             self._record("run_start", detail=f"planned order: {', '.join(order)}")
+            if self._rig.trigger is not None:
+                self._arm_counter(labjack)
             if self._wait_for_trigger:
                 self._await_trigger(labjack, worker)
             self._publish(
@@ -329,36 +341,87 @@ class Executor:
             message = f"{error} " + (" ".join(problems) or "All valves closed, every flow zero.")
             return Phase.FAILED, message, worker.full_scales
 
+    def _trigger_line(self) -> str:
+        assert self._rig.trigger is not None
+        return hardware.digital_channel_name(self._rig.trigger.channel)
+
+    def _arm_counter(self, labjack: Any) -> None:
+        """Count pulses on the trigger line from now on, and record them from idle time."""
+        assert self._rig.trigger is not None
+        line = self._trigger_line()
+        labjack.enable_counter(self._rig.trigger.channel)
+        before = labjack.read_counter(reset=True)
+        _is_input, level = labjack.read_digital(self._rig.trigger.channel)
+        self._record(
+            "counter_enabled",
+            device=line,
+            value=before,
+            detail=f"pulse counter on {line}; line {'high' if level else 'low'}; "
+            f"count before reset {before}",
+        )
+        self._sync = SyncRecorder(
+            labjack.read_counter,
+            clock=self.elapsed_seconds,
+            on_pulse=self._on_sync_pulse,
+            on_error=self._on_sync_error,
+            on_stopped=self._on_sync_stopped,
+        )
+        self._publish(sync_pulses=0)
+
+    def _on_sync_pulse(self, count: int, seconds: float, arrived: int) -> None:
+        status = self.status
+        assert self._sync is not None
+        self._record(
+            "sync_pulse",
+            returned_run_seconds=seconds,
+            device=self._trigger_line(),
+            value=count,
+            trial_index=status.trial_index,
+            trial_name=status.trial_name or "",
+            step_index=status.step_index,
+            detail=f"{arrived} pulses since the last read" if arrived > 1 else "",
+        )
+        self._publish(sync_pulses=self._sync.pulses)
+
+    def _on_sync_error(self, message: str) -> None:
+        self._record("error", device=self._trigger_line(), detail=f"pulse counter: {message}")
+
+    def _on_sync_stopped(self, seconds: float) -> None:
+        self._record(
+            "sync_recording_stopped",
+            returned_run_seconds=seconds,
+            device=self._trigger_line(),
+            detail=f"{READ_FAILURE_LIMIT} failed counter reads in a row; the run goes on",
+        )
+        self._publish(sync_stopped_seconds=seconds)
+
     def _await_trigger(self, labjack: Any, worker: MfcWorker) -> None:
-        """Hold the recipe end state and poll the trigger line until the schedule may start.
+        """Hold the recipe end state and poll the counter until the schedule may start.
 
         A stop request ends the wait and lets ``_run_trials`` end the run with no
         trial. Abort and timeout end in the safe state through the callers.
         """
         trigger = self._rig.trigger
-        assert trigger is not None
-        line = hardware.digital_channel_name(trigger.channel)
+        assert trigger is not None and self._sync is not None
+        line = self._trigger_line()
         timeout = trigger.timeout_seconds
         self._publish(
             phase=Phase.WAITING,
-            message=f"Waiting for the {trigger.edge} edge on {line}."
+            message=f"Waiting for the TTL pulse on {line}."
             + (f" Timeout {timeout:g} s." if timeout is not None else ""),
         )
-        labjack.configure_input(trigger.channel)
-        self._record(
-            "trigger_wait", device=line, detail=f"{trigger.edge} edge; {line} set to input"
-        )
+        self._record("trigger_wait", device=line, detail="counter armed")
         rest = self._recipe.shutdown
         self._apply_step(rest, labjack, worker, {"detail": "rest state while waiting"})
         self._publish(valves=dict(rest.valves), setpoints=dict(rest.setpoints))
 
-        def read() -> bool:
+        def read_count() -> int:
             if worker.failed:
                 raise DeviceError(worker.error or "The MFC worker failed.")
-            return labjack.read_digital(trigger.channel)[1]
+            return labjack.read_counter()
 
         result = wait_for_trigger(
-            read,
+            read_count,
             trigger,
             clock=self.elapsed_seconds,
             should_abort=self._abort.is_set,
@@ -367,6 +430,7 @@ class Executor:
         )
         if result.outcome in {TriggerOutcome.RECEIVED, TriggerOutcome.STARTED_NOW}:
             self._schedule_offset = result.ended_seconds
+            self._sync.start_from(result.count)
             self._record(
                 "trigger_received",
                 returned_run_seconds=result.ended_seconds,
@@ -381,7 +445,7 @@ class Executor:
         if result.outcome is TriggerOutcome.ABORTED:
             raise _Aborted
         if result.outcome is TriggerOutcome.TIMED_OUT:
-            raise DeviceError(f"No {trigger.edge} edge on {line} within {timeout:g} s.")
+            raise DeviceError(f"No TTL pulse on {line} within {timeout:g} s.")
 
     def _run_trials(self, order: list[str], labjack: Any, worker: MfcWorker) -> bool:
         origin = self._schedule_offset
@@ -426,16 +490,27 @@ class Executor:
         return False
 
     def _wait_until(self, deadline_seconds: float, worker: MfcWorker) -> None:
+        """Wait for a step deadline; poll the pulse counter while the deadline is far."""
         while True:
             if self._abort.is_set():
                 raise _Aborted
             if worker.failed:
                 raise DeviceError(worker.error or "The MFC worker failed.")
-            remaining = deadline_seconds - self.elapsed_seconds()
+            now = self.elapsed_seconds()
+            remaining = deadline_seconds - now
             if remaining <= 0:
                 return
-            if remaining > SPIN_SECONDS:
-                self._abort.wait(min(remaining - SPIN_SECONDS, 0.05))
+            if remaining <= SPIN_SECONDS:
+                continue
+            wait = min(remaining - SPIN_SECONDS, 0.05)
+            sync = self._sync
+            if sync is not None and sync.active and remaining > SYNC_MARGIN_SECONDS:
+                due = sync.seconds_until_poll(now)
+                if due <= 0:
+                    sync.poll()
+                    continue
+                wait = min(wait, due)
+            self._abort.wait(wait)
 
     def _apply_step(
         self, step: Step, labjack: Any, worker: MfcWorker, context: dict[str, Any]
@@ -494,6 +569,12 @@ class Executor:
             )
         elif worker.error:
             problems.append(worker.error)
+        if self._sync is not None:
+            try:
+                labjack.disable_counter()
+                self._record("counter_restored", device=self._trigger_line())
+            except DeviceError as error:
+                problems.append(str(error))
         self._publish(valves=dict(state.valves), setpoints=dict(state.setpoints))
         self._record(event, detail="; ".join(problems) or "applied")
         return problems

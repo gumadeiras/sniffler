@@ -1,10 +1,21 @@
-"""Wait for a TTL edge on a LabJack digital input before the trial schedule starts."""
+"""Pulse detection on the LabJack hardware counter: the start gate and the sync record.
 
+The step-timing thread owns the LabJack. It polls the counter only while it has
+nothing else to do, so a read never delays a valve. The poll interval sets the
+time resolution of every mark; a pulse shorter than one poll still counts,
+because the counter saw it.
+"""
+
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
 from sniffler.config import TriggerSettings
+from sniffler.hardware import DeviceError
+
+POLL_SECONDS = 0.005
+READ_FAILURE_LIMIT = 5
 
 
 class TriggerOutcome(StrEnum):
@@ -23,7 +34,7 @@ class TriggerResult:
     ended_seconds: float
     waited_seconds: float
     reads: int
-    armed: bool
+    count: int
 
     @property
     def seconds_per_read(self) -> float:
@@ -33,31 +44,30 @@ class TriggerResult:
         text = f"{self.outcome.value} after {self.waited_seconds:.3f} s and {self.reads} reads"
         if self.reads:
             text += f", {self.seconds_per_read * 1000:.1f} ms per read"
-        if not self.armed:
-            text += "; the line never showed the level before the edge"
+        if self.count > 1:
+            text += f"; {self.count} pulses arrived"
         return text
 
 
 def wait_for_trigger(
-    read: Callable[[], bool],
+    read_count: Callable[[], int],
     settings: TriggerSettings,
     *,
     clock: Callable[[], float],
     should_abort: Callable[[], bool],
     should_stop: Callable[[], bool],
     should_start_now: Callable[[], bool],
+    poll_seconds: float = POLL_SECONDS,
 ) -> TriggerResult:
-    """Poll the input until the configured edge, or until the operator ends the wait.
+    """Poll the counter until it has counted a pulse, or until the operator ends the wait.
 
-    The edge counts only after the line was seen at the level before it, so an
-    open input that floats high cannot start a rising-edge run by itself. Each
-    read is one device round trip, which sets the detection resolution; the
-    result records how many reads the wait took.
+    The counter must have been reset when the wait was armed. The mark lands on
+    the first read that sees the count, so its lag is at most one poll plus one
+    device round trip.
     """
-    active = settings.edge == "rising"
     started = clock()
     reads = 0
-    armed = False
+    count = 0
     while True:
         if should_abort():
             outcome = TriggerOutcome.ABORTED
@@ -72,12 +82,76 @@ def wait_for_trigger(
         if timeout is not None and clock() - started >= timeout:
             outcome = TriggerOutcome.TIMED_OUT
             break
-        level = read()
+        count = read_count()
         reads += 1
-        if not armed:
-            armed = level != active
-        elif level == active:
+        if count > 0:
             outcome = TriggerOutcome.RECEIVED
             break
+        time.sleep(poll_seconds)
     ended = clock()
-    return TriggerResult(outcome, ended, ended - started, reads, armed)
+    return TriggerResult(outcome, ended, ended - started, reads, count)
+
+
+class SyncRecorder:
+    """Record every pulse the counter sees, from the step thread's idle time.
+
+    ``poll`` runs only when the next deadline is far enough away that one read
+    cannot delay it. A failed read is reported; after READ_FAILURE_LIMIT failures
+    in a row the recorder stops and the run goes on without it.
+    """
+
+    def __init__(
+        self,
+        read_count: Callable[[], int],
+        *,
+        clock: Callable[[], float],
+        on_pulse: Callable[[int, float, int], None],
+        on_error: Callable[[str], None],
+        on_stopped: Callable[[float], None],
+        poll_seconds: float = POLL_SECONDS,
+    ) -> None:
+        self._read = read_count
+        self._clock = clock
+        self._on_pulse = on_pulse
+        self._on_error = on_error
+        self._on_stopped = on_stopped
+        self._poll_seconds = poll_seconds
+        self._next_poll = 0.0
+        self._failures = 0
+        self.count = 0
+        self.pulses = 0
+        self.stopped_seconds: float | None = None
+
+    @property
+    def active(self) -> bool:
+        return self.stopped_seconds is None
+
+    def start_from(self, count: int) -> None:
+        """Take the count at the start gate as the baseline; that pulse is not a mark."""
+        self.count = count
+
+    def seconds_until_poll(self, now: float) -> float:
+        return max(0.0, self._next_poll - now)
+
+    def poll(self) -> None:
+        """Read the counter once and report every pulse that arrived since the last read."""
+        if not self.active:
+            return
+        now = self._clock()
+        self._next_poll = now + self._poll_seconds
+        try:
+            count = self._read()
+        except DeviceError as error:
+            self._failures += 1
+            self._on_error(str(error))
+            if self._failures >= READ_FAILURE_LIMIT:
+                self.stopped_seconds = self._clock()
+                self._on_stopped(self.stopped_seconds)
+            return
+        self._failures = 0
+        seen = self._clock()
+        arrived = count - self.count
+        for pulse in range(1, arrived + 1):
+            self.pulses += 1
+            self._on_pulse(self.count + pulse, seen, arrived)
+        self.count = count

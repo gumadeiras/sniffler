@@ -36,6 +36,19 @@ class FakeLevelRead(FakeFeedbackCommand):
     pass
 
 
+class FakeCounterRead(FakeFeedbackCommand):
+    pass
+
+
+COUNTER_CONFIGURATION = {
+    "EnableCounter0": False,
+    "EnableCounter1": False,
+    "NumberOfTimersEnabled": 0,
+    "TimerCounterPinOffset": 4,
+    "FIOAnalog": 15,
+}
+
+
 class FakeU3:
     instances: ClassVar[list["FakeU3"]] = []
 
@@ -50,7 +63,13 @@ class FakeU3:
         self.config_reads = 0
         self.line_is_output = 0
         self.line_level = 1
+        self.counter_value = 7
+        self.io_configurations: list[dict] = []
         self.instances.append(self)
+
+    def configIO(self, **changes) -> dict:
+        self.io_configurations.append(dict(changes))
+        return dict(COUNTER_CONFIGURATION)
 
     def getFeedback(self, *commands: FakeFeedbackCommand) -> list[int | None]:
         self.feedback.append(list(commands))
@@ -60,6 +79,8 @@ class FakeU3:
                 results.append(self.line_is_output)
             elif isinstance(command, FakeLevelRead):
                 results.append(self.line_level)
+            elif isinstance(command, FakeCounterRead):
+                results.append(self.counter_value)
             else:
                 results.append(None)
         return results
@@ -94,6 +115,7 @@ class LabJackTests(unittest.TestCase):
             BitDirWrite=FakeFeedbackCommand,
             BitDirRead=FakeDirectionRead,
             BitStateRead=FakeLevelRead,
+            Counter=FakeCounterRead,
         )
 
     def test_routes_serial_calibrates_reads_and_closes(self) -> None:
@@ -200,12 +222,42 @@ class LabJackTests(unittest.TestCase):
         ):
             session.read_digital(2)
 
-    def test_configures_a_trigger_line_as_input_on_purpose(self) -> None:
+    def test_counts_pulses_with_the_hardware_counter_and_restores_the_device(self) -> None:
         with patch.dict(sys.modules, {"u3": self.u3_module}), open_labjack() as session:
-            session.configure_input(4)
+            session.enable_counter(4)
+            count = session.read_counter(reset=True)
+            later = session.read_counter()
+            session.disable_counter()
+            session.disable_counter()
 
-        (write,) = FakeU3.instances[0].feedback[0]
-        self.assertEqual(write.fields, {"IONumber": 4, "Direction": 0})
+        device = FakeU3.instances[0]
+        self.assertEqual((count, later), (7, 7))
+        self.assertEqual(
+            device.io_configurations,
+            [
+                {},
+                {"EnableCounter0": True, "NumberOfTimersEnabled": 0, "TimerCounterPinOffset": 4},
+                {
+                    "EnableCounter0": False,
+                    "EnableCounter1": False,
+                    "NumberOfTimersEnabled": 0,
+                    "TimerCounterPinOffset": 4,
+                },
+            ],
+            "read the configuration, enable the counter, restore exactly once",
+        )
+        reset, plain = device.feedback
+        self.assertEqual(reset[0].fields, {"counter": 0, "Reset": True})
+        self.assertEqual(plain[0].fields, {"counter": 0, "Reset": False})
+
+    def test_refuses_a_counter_where_the_u3_cannot_place_one(self) -> None:
+        with (
+            patch.dict(sys.modules, {"u3": self.u3_module}),
+            self.assertRaisesRegex(DeviceError, "EIO1 cannot host the pulse counter"),
+            open_labjack() as session,
+        ):
+            session.enable_counter(9)
+        self.assertEqual(FakeU3.instances[0].io_configurations, [])
 
     def test_refuses_a_multi_line_write_that_includes_an_analog_line(self) -> None:
         with (
