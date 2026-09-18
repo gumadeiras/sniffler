@@ -59,8 +59,17 @@ class FakeLabJack:
     def read_digital(self, channel: int) -> tuple[bool, bool]:
         return True, self.input_level
 
+    def timer_counter_configuration(self) -> dict[str, object]:
+        return {
+            "EnableCounter0": self.counter_channel is not None and not self.counter_restored,
+            "EnableCounter1": False,
+            "NumberOfTimersEnabled": 0,
+            "TimerCounterPinOffset": self.counter_channel or 4,
+        }
+
     def enable_counter(self, channel: int) -> None:
         self.counter_channel = channel
+        self.counter_restored = False
 
     def disable_counter(self) -> None:
         self.counter_restored = True
@@ -119,6 +128,11 @@ class FakeAlicat:
             raise DeviceError("Call prepare_setpoints before write_setpoint; no setpoint was sent.")
         self.setpoints.append(flow_rate)
         return flow_rate
+
+    async def status(self) -> dict[str, object]:
+        state = await self.read()
+        state["setpoint_source"] = "serial or display, zero on power-up"
+        return state
 
     async def read(self) -> dict[str, object]:
         if self.read_delay:

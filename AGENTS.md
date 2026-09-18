@@ -12,6 +12,9 @@ Two programs share one hardware layer:
 - `sniffler-gui` (`src/sniffler/gui/`) authors recipes and runs them through the executor.
 - `sniffler` (`src/sniffler/cli.py`) is for diagnostics only: status, one valve toggle, one
   setpoint, the port list. It must never run a recipe; two executors would diverge.
+- `sniffler-bench` (`src/sniffler/bench.py`) verifies the rig with the real devices. Its
+  timing, gate, and sync checks drive the shared executor with generated recipes; checks that
+  move hardware need `--actuate` and end in the safe state.
 
 ## Layout
 

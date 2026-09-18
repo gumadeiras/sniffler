@@ -18,6 +18,7 @@ dependencies = [
 [project.scripts]
 sniffler = "sniffler.cli:main"
 sniffler-gui = "sniffler.gui.app:main"
+sniffler-bench = "sniffler.bench:main"
 
 [dependency-groups]
 dev = ["ruff>=0.15,<1"]

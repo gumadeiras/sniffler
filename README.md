@@ -440,6 +440,28 @@ valves change in one LabJack transaction. MFC commands and readings run on a
 separate thread, so a slow MFC read never delays a valve. A single MFC read
 costs about 30 ms on the tested hardware; readings are taken at 10 Hz.
 
+## Bench checks
+
+`sniffler-bench` verifies the rig with the real devices, one check at a time or
+all of them, and prints a pass, fail, blocked, or skipped line with its numbers:
+
+```text
+uv run sniffler-bench                      # read-only: drivers, ports, mfcs, safe
+uv run sniffler-bench valves timing --actuate
+uv run sniffler-bench trigger gate sync --actuate --loopback 5
+uv run sniffler-bench timing --actuate --no-mfc
+```
+
+A check that moves valves, writes setpoints, or changes the U3 counter
+configuration needs `--actuate` and ends in the safe state. `--loopback` names a
+spare digital output wired to the trigger input, so the script can make its own
+pulses: `trigger` finds which edge the counter counts and confirms the
+configuration is restored, `gate` measures the time from the edge to the start
+of the trial schedule, and `sync` measures the lag of each sync mark. `--no-mfc`
+runs the executor checks without the MFCs while their setpoint source is not
+`U`. The timing, gate, and sync checks drive the same executor as the window;
+their run directories are written under `runs` and named in the output.
+
 ## Temporary command overrides
 
 You can override device identity without changing `lab.toml`:

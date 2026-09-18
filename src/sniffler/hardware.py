@@ -10,6 +10,12 @@ from pathlib import Path
 from typing import Any
 
 HOMEBREW_DRIVER_DIRECTORY = Path("/opt/homebrew/lib")
+_TIMER_COUNTER_KEYS = (
+    "EnableCounter0",
+    "EnableCounter1",
+    "NumberOfTimersEnabled",
+    "TimerCounterPinOffset",
+)
 
 
 class DeviceError(RuntimeError):
@@ -201,6 +207,16 @@ class LabJackSession:
             raise DeviceError(f"Cannot read {name}: {error}") from error
         return not bool(direction), bool(level)
 
+    def timer_counter_configuration(self) -> dict[str, Any]:
+        """Return the U3 timer and counter configuration. Nothing on the device changes."""
+        try:
+            current = self._device.configIO()
+        except Exception as error:
+            raise DeviceError(
+                f"Cannot read the U3 timer and counter configuration: {error}"
+            ) from error
+        return {key: current[key] for key in _TIMER_COUNTER_KEYS}
+
     def enable_counter(self, channel: int) -> None:
         """Count pulses on a digital line with hardware counter 0.
 
@@ -221,15 +237,7 @@ class LabJackSession:
                 f"Cannot enable the pulse counter on {name}; "
                 f"the U3 timer and counter configuration might have changed: {error}"
             ) from error
-        self._counter_previous = {
-            key: previous[key]
-            for key in (
-                "EnableCounter0",
-                "EnableCounter1",
-                "NumberOfTimersEnabled",
-                "TimerCounterPinOffset",
-            )
-        }
+        self._counter_previous = {key: previous[key] for key in _TIMER_COUNTER_KEYS}
 
     def disable_counter(self) -> None:
         """Restore the timer and counter configuration that ``enable_counter`` replaced."""
