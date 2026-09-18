@@ -151,8 +151,11 @@ class RunController(QObject):
 
 
 def _schedule_seconds(status: Status, elapsed: float) -> float:
-    """Seconds since the trial schedule started; run seconds minus the trigger time."""
-    return elapsed - (status.trigger_seconds or 0.0)
+    """Seconds since the trial schedule started: zero until it starts, then run
+    seconds minus the trigger time."""
+    if status.trigger_seconds is None:
+        return 0.0
+    return elapsed - status.trigger_seconds
 
 
 def _fixed_font() -> Any:

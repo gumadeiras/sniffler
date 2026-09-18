@@ -477,6 +477,7 @@ class MainWindowTests(GuiTestCase):
         self.assertFalse(window.trigger_box.isEnabled())
         self.assertTrue(window.abort_button.isEnabled())
         self.assertIn("waiting for the trigger", window.run_view.status_panel._time.text())
+        self.assertEqual(window.run_view.timeline._cursor, 0.0, "the schedule has not started")
         self.assertEqual(self.rig.labjack.inputs_configured, [4])
         self.assertEqual(self.rig.labjack.writes[0][1], {8: False, 9: False, 16: True})
 
