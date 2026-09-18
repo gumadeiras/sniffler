@@ -381,8 +381,11 @@ the counter only while the next valve deadline is more than 30 ms away, at
 most every 5 ms, so a read never delays a valve. A pulse shorter than one read
 still counts, because the counter saw it; its mark lands on the first read
 after it, so each mark is late by at most one read plus one USB round trip.
-The run log states the number of reads and the time per read. The Run tab
-shows the count, and the timeline marks each pulse. If the counter stops
+Every valve write also reads the counter in the same USB packet, so each
+`valve_command` row carries the exact count at the moment the valves switched,
+and a pulse that arrives during steps too short to poll is marked at the next
+valve command. The run log states the number of reads and the time per read.
+The Run tab shows the count, and the timeline marks each pulse. If the counter stops
 answering, the run goes on: the error is logged and, after five failed reads in
 a row, a `sync_recording_stopped` row and the manifest say from when the
 alignment data is missing.
@@ -414,8 +417,10 @@ recipe name:
   end, every sync pulse, and the end state or the all-off state. The time columns are seconds since the run started, which is
   the moment the devices were ready. `returned_run_seconds` is when the command
   returned from the device. `commanded_run_seconds` is when it was sent.
-  `scheduled_run_seconds` is the planned time. In a run that waited for a
-  trigger, `trigger_received` marks the trial schedule origin and the manifest
+  `scheduled_run_seconds` is the planned time. `sync_count` is the pulse count
+  on the trigger line at the moment of the row, on every valve command and
+  every sync pulse; it is empty when the rig has no trigger line. In a run that
+  waited for a trigger, `trigger_received` marks the trial schedule origin and the manifest
   repeats it as `trigger_seconds`. The manifest also holds `sync_pulses` and,
   when the record stopped early, `sync_recording_stopped_seconds`.
 - `samples.csv`: each MFC reading next to the setpoint that was commanded.

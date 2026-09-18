@@ -117,6 +117,15 @@ class SyncRecorderTests(unittest.TestCase):
 
         self.assertEqual([count for count, _, _ in self.pulses], [2])
 
+    def test_a_count_read_by_another_packet_counts_as_a_poll(self) -> None:
+        recorder = self.recorder(scripted([2]))
+
+        recorder.observe(2, 0.5)
+        recorder.poll()
+
+        self.assertEqual([(count, seen) for count, seen, _ in self.pulses], [(1, 0.5), (2, 0.5)])
+        self.assertEqual(recorder.pulses, 2)
+
     def test_keeps_the_poll_interval(self) -> None:
         clock = FakeClock(step=0.0)
         recorder = self.recorder(scripted([0]), clock)

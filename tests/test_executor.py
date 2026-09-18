@@ -407,7 +407,8 @@ class TriggerTests(ExecutorTestCase):
         self.assertLess(kinds.index("counter_restored"), kinds.index("shutdown_state"))
         received = events[kinds.index("trigger_received")]
         self.assertEqual(received["value"], "received")
-        self.assertIn("26 reads", received["detail"])
+        # The rest-state valve write took the first scripted count; the gate read the rest.
+        self.assertIn("25 reads", received["detail"])
         before = events[: kinds.index("trigger_received")]
         rest_valves = [event for event in before if event["event"] == "valve_command"]
         self.assertTrue(rest_valves)
@@ -454,6 +455,34 @@ class TriggerTests(ExecutorTestCase):
         self.assertEqual(status.trigger_seconds, 0.0)
         self.assertEqual(self.manifest(status)["sync_pulses"], 3)
         self.assertGreater(self.rig.labjack.count_reads, 7)
+
+    def test_valve_commands_carry_the_count_and_mark_pulses_in_short_steps(self) -> None:
+        # Steps of 20 ms never leave 30 ms of idle time, so the counter is read
+        # only inside the valve write packets.
+        self.rig.labjack.counts = [0, 0, 1]
+        recipe = make_recipe(step_seconds=0.02, counts={"odor": 1, "blank": 1})
+
+        status = self.executor(recipe, rig=RIG_WITH_TRIGGER).run()
+
+        self.assertEqual(status.phase, Phase.DONE, status.message)
+        events = self.events(status)
+        valve_rows = [e for e in events if e["event"] == "valve_command"]
+        writes = len(self.rig.labjack.writes)
+        self.assertEqual(self.rig.labjack.count_reads, writes, "one counter read per write")
+        self.assertTrue(all(row["sync_count"] != "" for row in valve_rows))
+        pulses = [e for e in events if e["event"] == "sync_pulse"]
+        self.assertEqual(len(pulses), 1)
+        marked_at = pulses[0]["returned_run_seconds"]
+        self.assertIn(marked_at, {row["returned_run_seconds"] for row in valve_rows})
+        self.assertEqual(pulses[0]["sync_count"], "1")
+        self.assertEqual(status.sync_pulses, 1)
+
+    def test_a_plain_rig_leaves_the_count_column_empty(self) -> None:
+        status = self.executor(rig=RIG).run()
+
+        rows = self.events(status)
+        self.assertIn("sync_count", rows[0])
+        self.assertTrue(all(row["sync_count"] == "" for row in rows))
 
     def test_a_dead_counter_stops_the_record_and_the_run_goes_on(self) -> None:
         self.rig.labjack.counter_error = "usb gone"

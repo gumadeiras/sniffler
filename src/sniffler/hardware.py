@@ -255,16 +255,20 @@ class LabJackSession:
             raise DeviceError(f"Cannot read the pulse counter: {error}") from error
         return int(count)
 
-    def write_digital_lines(self, states: dict[int, bool]) -> None:
+    def write_digital_lines(
+        self, states: dict[int, bool], *, read_counter: bool = False
+    ) -> int | None:
         """Set several digital output lines in one device transaction.
 
         Every listed line becomes an output with the given state at the same
         time. Lines that are not listed do not change. There is no readback,
-        so a failed write reports that the outputs might have changed.
+        so a failed write reports that the outputs might have changed. With
+        ``read_counter`` the same packet also reads counter 0 right after the
+        lines switch and returns the count; otherwise the result is None.
         """
         names = [self._require_digital(channel) for channel in states]
         if not states:
-            return
+            return None
         import u3
 
         mask = [0, 0, 0]
@@ -274,16 +278,20 @@ class LabJackSession:
             mask[port] |= 1 << bit
             if state:
                 levels[port] |= 1 << bit
+        commands = [
+            u3.PortDirWrite(Direction=mask, WriteMask=mask),
+            u3.PortStateWrite(State=levels, WriteMask=mask),
+        ]
+        if read_counter:
+            commands.append(u3.Counter(counter=0, Reset=False))
         try:
-            self._device.getFeedback(
-                u3.PortDirWrite(Direction=mask, WriteMask=mask),
-                u3.PortStateWrite(State=levels, WriteMask=mask),
-            )
+            results = self._device.getFeedback(*commands)
         except Exception as error:
             raise DeviceError(
                 f"Cannot confirm the write to {', '.join(names)}; "
                 f"the outputs might have changed: {error}"
             ) from error
+        return int(results[-1]) if read_counter else None
 
 
 @contextmanager

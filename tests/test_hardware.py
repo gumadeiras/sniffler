@@ -198,6 +198,19 @@ class LabJackTests(unittest.TestCase):
         self.assertEqual(direction.fields, {"Direction": [0, 6, 9], "WriteMask": [0, 6, 9]})
         self.assertEqual(state.fields, {"State": [0, 2, 9], "WriteMask": [0, 6, 9]})
 
+    def test_the_write_packet_can_read_the_pulse_counter_after_the_lines_switch(self) -> None:
+        with patch.dict(sys.modules, {"u3": self.u3_module}), open_labjack() as session:
+            plain = session.write_digital_lines({9: True})
+            counted = session.write_digital_lines({9: False}, read_counter=True)
+
+        device = FakeU3.instances[0]
+        self.assertIsNone(plain)
+        self.assertEqual(counted, 7)
+        self.assertEqual(len(device.feedback[0]), 2)
+        counter = device.feedback[1][-1]
+        self.assertIsInstance(counter, FakeCounterRead)
+        self.assertEqual(counter.fields, {"counter": 0, "Reset": False})
+
     def test_reads_a_digital_line_without_changing_it(self) -> None:
         with patch.dict(sys.modules, {"u3": self.u3_module}):
             is_input, level = read_labjack_digital(4)

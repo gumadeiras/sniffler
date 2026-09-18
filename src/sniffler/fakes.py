@@ -51,13 +51,18 @@ class FakeLabJack:
         self.count_reads += 1
         return count
 
-    def write_digital_lines(self, states: dict[int, bool]) -> None:
+    def write_digital_lines(
+        self, states: dict[int, bool], *, read_counter: bool = False
+    ) -> int | None:
         if self.fail_on_write is not None and len(self.writes) == self.fail_on_write:
             self.fail_on_write = None
             raise DeviceError("usb gone; the outputs might have changed")
         if self.write_delay:
             time.sleep(self.write_delay)
         self.writes.append((time.perf_counter(), dict(states)))
+        if not read_counter:
+            return None
+        return self.read_counter()
 
 
 class FakeAlicat:

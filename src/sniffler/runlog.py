@@ -26,6 +26,7 @@ EVENT_COLUMNS = (
     "device",
     "value",
     "detail",
+    "sync_count",
 )
 SAMPLE_COLUMNS = (
     "wall_time",
@@ -190,8 +191,13 @@ class RunLog:
         value: object = "",
         detail: str = "",
         returned_wall_time: str | None = None,
+        sync_count: int | None = None,
     ) -> None:
-        """Append one event. Times are seconds since the run started."""
+        """Append one event. Times are seconds since the run started.
+
+        ``sync_count`` is the pulse count on the trigger line when the event was
+        recorded, for rows that read it; empty otherwise.
+        """
         row = [
             returned_wall_time or wall_time_now(),
             _seconds(scheduled_run_seconds),
@@ -204,6 +210,7 @@ class RunLog:
             device,
             value,
             detail,
+            "" if sync_count is None else sync_count,
         ]
         with self._lock:
             if self._events is None or self._event_writer is None:

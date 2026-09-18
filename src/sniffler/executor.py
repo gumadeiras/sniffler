@@ -86,6 +86,7 @@ class Event:
     device: str = ""
     value: object = ""
     detail: str = ""
+    sync_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -380,6 +381,7 @@ class Executor:
             trial_name=status.trial_name or "",
             step_index=status.step_index,
             detail=f"{arrived} pulses since the last read" if arrived > 1 else "",
+            sync_count=count,
         )
         self._publish(sync_pulses=self._sync.pulses)
 
@@ -532,8 +534,9 @@ class Executor:
     ) -> None:
         """Write every valve in one transaction and record each changed valve."""
         channels = {self._rig.valves[name]: state for name, state in valves.items()}
+        sync = self._sync if self._sync is not None and self._sync.active else None
         commanded = self.elapsed_seconds()
-        labjack.write_digital_lines(channels)
+        count = labjack.write_digital_lines(channels, read_counter=sync is not None)
         returned = self.elapsed_seconds()
         wall_time = wall_time_now()
         previous = self._last_valves
@@ -548,8 +551,11 @@ class Executor:
                 device=name,
                 value="open" if state else "closed",
                 returned_wall_time=wall_time,
+                sync_count=count,
                 **context,
             )
+        if sync is not None and count is not None:
+            sync.observe(count, returned)
 
     def _apply_final_state(
         self, labjack: Any, worker: MfcWorker, state: Step, event: str

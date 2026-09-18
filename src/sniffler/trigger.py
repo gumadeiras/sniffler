@@ -149,9 +149,12 @@ class SyncRecorder:
                 self._on_stopped(self.stopped_seconds)
             return
         self._failures = 0
-        seen = self._clock()
+        self.observe(count, self._clock())
+
+    def observe(self, count: int, seen: float) -> None:
+        """Take a count that another packet read, such as a valve write, as a poll result."""
         arrived = count - self.count
         for pulse in range(1, arrived + 1):
             self.pulses += 1
             self._on_pulse(self.count + pulse, seen, arrived)
-        self.count = count
+        self.count = max(self.count, count)

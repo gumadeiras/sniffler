@@ -68,6 +68,7 @@ class RunLogTests(unittest.TestCase):
                 step_index=2,
                 device="odor-1",
                 value="open",
+                sync_count=4,
             )
             log.sample(
                 "mfc-500",
@@ -82,6 +83,8 @@ class RunLogTests(unittest.TestCase):
                 samples = list(csv.DictReader(file))
             manifest = json.loads((log.directory / "manifest.json").read_text())
             self.assertEqual(len(events), 2, "rows are visible before close")
+            self.assertEqual(events[0]["sync_count"], "")
+            self.assertEqual(events[1]["sync_count"], "4")
             self.assertEqual(events[1]["returned_run_seconds"], "1.003400")
             self.assertEqual(events[1]["commanded_run_seconds"], "1.002100")
             self.assertEqual(events[1]["step_index"], "2")
