@@ -7,8 +7,9 @@ and deterministic for the tests; ``realistic=True`` adds lag and noise for the d
 import asyncio
 import random
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from contextlib import asynccontextmanager, contextmanager
+from dataclasses import dataclass
 
 from sniffler.hardware import DeviceError
 
@@ -17,18 +18,40 @@ LAG_FRACTION = 0.35
 NOISE_FRACTION = 0.004
 
 
-class FakeLabJack:
-    """Record every multi-line write with the time it was made."""
+@dataclass(frozen=True)
+class PulseTrain:
+    """A regular TTL train on the fake trigger line, timed from the counter reset."""
 
-    def __init__(self) -> None:
+    first_seconds: float
+    period_seconds: float
+
+    def count_at(self, seconds: float) -> int:
+        if seconds < self.first_seconds:
+            return 0
+        return 1 + int((seconds - self.first_seconds) / self.period_seconds)
+
+
+class FakeLabJack:
+    """Record every multi-line write with the time it was made.
+
+    The pulse counter answers from the ``counts`` list, one entry per read with the
+    last one held forever, so the tests are exact. With a ``pulse_train`` it counts
+    with the clock instead, from the last reset, so the demo sees pulses arrive.
+    """
+
+    def __init__(
+        self, pulse_train: PulseTrain | None = None, clock: Callable[[], float] = time.monotonic
+    ) -> None:
         self.writes: list[tuple[float, dict[int, bool]]] = []
         self.fail_on_write: int | None = None
         self.write_delay = 0.0
         self.closed = False
         self.input_level = False
-        # The pulse counter: one count per read, the last count held forever.
         self.counts: list[int] = [0]
         self.count_reads = 0
+        self.pulse_train = pulse_train
+        self._clock = clock
+        self._reset_at = clock()
         self.counter_channel: int | None = None
         self.counter_restored = False
         self.counter_error: str | None = None
@@ -46,8 +69,12 @@ class FakeLabJack:
         if self.counter_error is not None:
             raise DeviceError(self.counter_error)
         if reset:
+            self._reset_at = self._clock()
             return 0
-        count = self.counts[min(self.count_reads, len(self.counts) - 1)]
+        if self.pulse_train is not None:
+            count = self.pulse_train.count_at(self._clock() - self._reset_at)
+        else:
+            count = self.counts[min(self.count_reads, len(self.counts) - 1)]
         self.count_reads += 1
         return count
 
@@ -117,8 +144,9 @@ class FakeRig:
         full_scales: dict[str, float] | None = None,
         *,
         realistic: bool = False,
+        pulse_train: PulseTrain | None = None,
     ) -> None:
-        self.labjack = FakeLabJack()
+        self.labjack = FakeLabJack(pulse_train)
         self.alicats = {
             name: FakeAlicat(name, (full_scales or {}).get(name, 500.0), realistic=realistic)
             for name in mfc_names

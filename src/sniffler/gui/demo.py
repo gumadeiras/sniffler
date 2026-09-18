@@ -9,7 +9,7 @@ from pathlib import Path
 from PySide6.QtCore import QSettings
 
 from sniffler.config import AlicatSettings, Settings, TriggerSettings
-from sniffler.fakes import FakeRig
+from sniffler.fakes import FakeRig, PulseTrain
 from sniffler.gui.app import MainWindow
 from sniffler.recipe import Recipe, Schedule, Step, Trial, rig_map_from_settings
 
@@ -18,6 +18,9 @@ VALVES = {"valve A": 8, "valve B": 9, "valve C": 10, "valve D": 11}
 MFCS = {"carrier flow": 2000.0, "odor flow": 500.0}
 CARRIER = 400.0
 ODOR = 100.0
+# The fake trigger line: the first pulse comes after the wait is visible, then a
+# steady train marks the timeline through the trials.
+PULSES = PulseTrain(first_seconds=3.0, period_seconds=1.0)
 
 
 def demo_settings(runs_directory: Path = RUNS_DIRECTORY) -> Settings:
@@ -28,13 +31,12 @@ def demo_settings(runs_directory: Path = RUNS_DIRECTORY) -> Settings:
         },
         valves=dict(VALVES),
         runs_directory=runs_directory,
-        # The fake input stays low, so a demo run that waits ends with Start now.
         trigger=TriggerSettings(channel=4),
     )
 
 
 def demo_rig() -> FakeRig:
-    return FakeRig(MFCS, MFCS, realistic=True)
+    return FakeRig(MFCS, MFCS, realistic=True, pulse_train=PULSES)
 
 
 def _step(seconds: float | None, *open_valves: str, odor: float = ODOR) -> Step:

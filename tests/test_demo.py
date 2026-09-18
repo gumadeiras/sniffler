@@ -1,5 +1,6 @@
 """Demo mode: fake devices only, a valid sample recipe, and a visible marker."""
 
+import csv
 import gc
 import os
 import tempfile
@@ -13,6 +14,7 @@ from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from sniffler.executor import Phase
+from sniffler.fakes import FakeLabJack, PulseTrain
 from sniffler.gui import demo
 from sniffler.recipe import (
     Recipe,
@@ -119,6 +121,54 @@ class DemoTests(unittest.TestCase):
             0.1 * demo.CARRIER,
             "the fake carrier flow approaches its setpoint",
         )
+        window.close()
+
+    def test_fake_pulse_train_counts_from_the_counter_reset(self) -> None:
+        now = [0.0]
+        labjack = FakeLabJack(
+            PulseTrain(first_seconds=3.0, period_seconds=1.0), clock=lambda: now[0]
+        )
+        now[0] = 10.0
+        self.assertEqual(labjack.read_counter(reset=True), 0)
+        now[0] = 12.9
+        self.assertEqual(labjack.read_counter(), 0, "nothing before the first pulse")
+        now[0] = 13.0
+        self.assertEqual(labjack.read_counter(), 1)
+        now[0] = 15.5
+        self.assertEqual(labjack.read_counter(), 3)
+        self.assertEqual(labjack.write_digital_lines({8: True}, read_counter=True), 3)
+        self.assertEqual(labjack.count_reads, 4, "the reset is not a counted read")
+
+    def test_demo_run_starts_on_the_fake_pulse_and_marks_the_train(self) -> None:
+        window = demo.demo_window(self.store, Path(self.temporary.name, "runs-demo"))
+        warnings: list[tuple[str, str]] = []
+        window._tell = lambda _parent, title, text: warnings.append((title, text))
+        window._ask = lambda *_arguments, **_options: QMessageBox.Discard
+        recipe = demo.demo_recipe()
+        short = Recipe(
+            recipe.name,
+            (Trial("odor A", (demo._step(0.8, "valve A"), demo._step(0.8))),),
+            Schedule({"odor A": 1}),
+            recipe.shutdown,
+        )
+        window.editor.set_recipe(short)
+        window.trigger_box.setChecked(True)
+
+        window.start_run()
+        self.wait_until(lambda: not window.controller.is_running)
+        self.application.processEvents()
+
+        status = window.controller.executor.status
+        self.assertEqual(status.phase, Phase.DONE, status.message)
+        self.assertEqual(warnings, [])
+        self.assertAlmostEqual(status.trigger_seconds, demo.PULSES.first_seconds, delta=0.5)
+        self.assertGreaterEqual(status.sync_pulses, 1, "the train continues through the trials")
+        self.assertGreaterEqual(len(window.run_view.timeline._marks), 1)
+        with open(status.run_directory / "events.csv", newline="") as handle:
+            events = {row["event"]: row for row in csv.DictReader(handle)}
+        self.assertEqual(events["trigger_received"]["value"], "received")
+        self.assertEqual(events["trigger_received"]["sync_count"], "")
+        self.assertEqual(events["sync_pulse"]["sync_count"], "2", "the start pulse is not a mark")
         window.close()
 
 
