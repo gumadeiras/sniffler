@@ -59,6 +59,8 @@ class DemoTests(unittest.TestCase):
         self.assertEqual(len(together), 3, "three pulses open valve A and valve B together")
         self.assertTrue(all(step.valves["valve A"] and step.valves["valve B"] for step in together))
         self.assertEqual(list(rig.valves), ["valve A", "valve B", "valve C", "valve D"])
+        self.assertEqual(set(recipe.valve_contents), set(rig.valves), "every valve names an odor")
+        self.assertEqual(recipe.valve_label("valve C"), "geosmin")
         self.assertEqual(list(rig.mfcs), ["carrier flow", "odor flow"])
         self.assertTrue(all(mfc.port.startswith("fake:") for mfc in rig.mfcs.values()))
 

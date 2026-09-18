@@ -15,6 +15,12 @@ from sniffler.recipe import Recipe, Schedule, Step, Trial, rig_map_from_settings
 
 RUNS_DIRECTORY = Path("runs-demo")
 VALVES = {"valve A": 8, "valve B": 9, "valve C": 10, "valve D": 11}
+ODORS = {
+    "valve A": "ethyl acetate",
+    "valve B": "pentyl acetate",
+    "valve C": "geosmin",
+    "valve D": "benzaldehyde",
+}
 MFCS = {"carrier flow": 2000.0, "odor flow": 500.0}
 CARRIER = 400.0
 ODOR = 100.0
@@ -67,6 +73,7 @@ def demo_recipe() -> Recipe:
         schedule=Schedule({"odor A": 2, "odor B": 2, "mixture A + B": 2, "blank": 2}),
         shutdown=_step(None, odor=0.0),
         notes="Demo recipe on fake devices. Nothing here reaches hardware.",
+        valve_contents=dict(ODORS),
     )
 
 
