@@ -106,7 +106,6 @@ class RunLock:
         self._held = False
 
     def acquire(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         content = json.dumps(
             {
                 "run_directory": str(self._run_directory),
@@ -115,6 +114,7 @@ class RunLock:
             }
         )
         try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("x", encoding="utf-8") as file:
                 file.write(content + "\n")
         except FileExistsError as error:
@@ -215,8 +215,11 @@ class RunLog:
         with self._lock:
             if self._events is None or self._event_writer is None:
                 raise RunLogError("The run log is not open.")
-            self._event_writer.writerow(row)
-            self._events.flush()
+            try:
+                self._event_writer.writerow(row)
+                self._events.flush()
+            except OSError as error:
+                raise RunLogError(f"Cannot write {EVENTS_NAME}: {error}") from error
 
     def sample(
         self,
@@ -241,19 +244,26 @@ class RunLog:
         with self._lock:
             if self._samples is None or self._sample_writer is None:
                 raise RunLogError("The run log is not open.")
-            self._sample_writer.writerow(row)
-            self._samples.flush()
+            try:
+                self._sample_writer.writerow(row)
+                self._samples.flush()
+            except OSError as error:
+                raise RunLogError(f"Cannot write {SAMPLES_NAME}: {error}") from error
 
     def close(self, **final_fields: Any) -> None:
         """Close the logs and record the outcome in the manifest."""
         with self._lock:
-            for file in (self._events, self._samples):
+            files = (self._events, self._samples)
+            self._events = self._samples = None  # a late row is refused, not lost in a closed file
+        try:
+            for file in files:
                 if file is not None:
                     file.close()
-            self._events = self._samples = None
-        if final_fields and self._manifest:
-            self._manifest.update(final_fields)
-            self._write_manifest()
+            if final_fields and self._manifest:
+                self._manifest.update(final_fields)
+                self._write_manifest()
+        except OSError as error:
+            raise RunLogError(f"Cannot finish the run log in {self.directory}: {error}") from error
 
 
 def _seconds(value: float | None) -> str:

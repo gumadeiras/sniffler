@@ -95,14 +95,36 @@ class BenchTests(unittest.TestCase):
         self.assertIn("--loopback", results[0].lines[0])
 
     def test_gate_check_measures_edge_to_schedule_latency(self) -> None:
-        # The rest state write reads the counter first (0); the gate's second read sees 1.
+        # The gate's third read sees the pulse; the U3 counts falling edges, tried first.
         self.fake.labjack.counts = [0, 0, 1]
 
         result = run_checks(self.bench(), ["gate"])[0]
 
         self.assertEqual(result.outcome, "pass", result.lines)
         self.assertTrue(any("edge to schedule start:" in line for line in result.lines))
-        self.assertTrue(any(line.startswith("rising edge run") for line in result.lines))
+        self.assertTrue(any(line.startswith("falling edge run") for line in result.lines))
+        self.assertIn("3 reads", result.lines[-1])
+
+    def test_sync_check_expects_one_mark_per_loop_back_pulse(self) -> None:
+        labjack = self.fake.labjack
+        write = labjack.write_digital_lines
+        level = {"high": False}
+
+        # The loop-back on channel 5 feeds the counter, which counts falling edges
+        # like the U3: one count per pulse, none for the lead and end-state writes.
+        def loop_back(states: dict[int, bool], *, read_counter: bool = False) -> int | None:
+            high = states.get(5, level["high"])
+            if level["high"] and not high and labjack.counter_channel is not None:
+                labjack.counts = [labjack.counts[-1] + 1]
+            level["high"] = high
+            return write(states, read_counter=read_counter)
+
+        labjack.write_digital_lines = loop_back
+        with patch("sniffler.bench.SYNC_PULSE_SECONDS", 0.02):
+            result = run_checks(self.bench(), ["sync"])[0]
+
+        self.assertEqual(result.outcome, "pass", result.lines)
+        self.assertIn("loop-back edges written: 10; sync marks recorded: 4", result.lines)
 
     def test_loopback_must_be_a_free_channel(self) -> None:
         with self.assertRaisesRegex(ConfigError, "free digital channel"):

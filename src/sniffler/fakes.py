@@ -122,6 +122,7 @@ class FakeAlicat:
         self.reads = 0
         self.prepared = False
         self.prepare_error: str | None = None
+        self.write_error: str | None = None
         self.read_delay = 0.0
         self.closed = False
         self._flow = 0.0
@@ -136,6 +137,8 @@ class FakeAlicat:
     async def write_setpoint(self, flow_rate: float) -> float:
         if not self.prepared:
             raise DeviceError("Call prepare_setpoints before write_setpoint; no setpoint was sent.")
+        if self.write_error:
+            raise DeviceError(self.write_error)
         self.setpoints.append(flow_rate)
         return flow_rate
 

@@ -30,6 +30,8 @@ VALVE_HOLD_SECONDS = 0.2
 GATE_TIMEOUT_SECONDS = 10.0
 PULSE_SECONDS = 0.1
 LEAD_SECONDS = 0.5
+SYNC_PULSE_SECONDS = 0.5
+SYNC_PULSES = 4
 
 
 @dataclass
@@ -206,15 +208,17 @@ def check_valves(bench: Bench) -> Result:
                 session.write_digital_lines(states)
                 round_trips.append(time.perf_counter() - started)
 
-            for name, channel in bench.rig.valves.items():
-                write({channel: True})
+            channels = list(bench.rig.valves.values())
+            try:
+                for name, channel in bench.rig.valves.items():
+                    write({channel: True})
+                    time.sleep(VALVE_HOLD_SECONDS)
+                    write({channel: False})
+                    lines.append(f"{name} (channel {channel}): opened and closed")
+                write(dict.fromkeys(channels, True))
                 time.sleep(VALVE_HOLD_SECONDS)
-                write({channel: False})
-                lines.append(f"{name} (channel {channel}): opened and closed")
-            everything = dict.fromkeys(bench.rig.valves.values(), True)
-            write(everything)
-            time.sleep(VALVE_HOLD_SECONDS)
-            write(dict.fromkeys(everything, False))
+            finally:
+                write(dict.fromkeys(channels, False))  # also on Ctrl-C
             open_after = [
                 name
                 for name, channel in bench.rig.valves.items()
@@ -332,30 +336,32 @@ def check_trigger(bench: Bench) -> Result:
             _is_input, level = session.read_digital(trigger.channel)
             lines.append(f"idle level on channel {trigger.channel}: {'high' if level else 'low'}")
             session.enable_counter(trigger.channel)
-            session.read_counter(reset=True)
-            if bench.loopback is not None:
-                session.write_digital_lines({bench.loopback: False})
-                time.sleep(0.05)
+            try:
                 session.read_counter(reset=True)
-                session.write_digital_lines({bench.loopback: True})
-                time.sleep(0.05)
-                after_rise = session.read_counter()
-                session.write_digital_lines({bench.loopback: False})
-                time.sleep(0.05)
-                after_fall = session.read_counter()
-                edge = "rising" if after_rise > 0 else "falling" if after_fall > 0 else "none"
-                lines.append(
-                    f"count after the loop-back rose: {after_rise}; after it fell: {after_fall}; "
-                    f"the counter counts the {edge} edge"
-                )
-                if after_fall not in (1,):
-                    lines.append("one full pulse should count exactly once")
-            else:
-                bench.ask("Send one TTL pulse to the trigger line, then press Return: ")
-                count = session.read_counter()
-                lines.append(f"count after one pulse by hand: {count}")
-                edge = "unknown"
-            session.disable_counter()
+                if bench.loopback is not None:
+                    session.write_digital_lines({bench.loopback: False})
+                    time.sleep(0.05)
+                    session.read_counter(reset=True)
+                    session.write_digital_lines({bench.loopback: True})
+                    time.sleep(0.05)
+                    after_rise = session.read_counter()
+                    session.write_digital_lines({bench.loopback: False})
+                    time.sleep(0.05)
+                    after_fall = session.read_counter()
+                    edge = "rising" if after_rise > 0 else "falling" if after_fall > 0 else "none"
+                    lines.append(
+                        f"count after the loop-back rose: {after_rise}; after it fell: "
+                        f"{after_fall}; the counter counts the {edge} edge"
+                    )
+                    if after_fall not in (1,):
+                        lines.append("one full pulse should count exactly once")
+                else:
+                    bench.ask("Send one TTL pulse to the trigger line, then press Return: ")
+                    count = session.read_counter()
+                    lines.append(f"count after one pulse by hand: {count}")
+                    edge = "unknown"
+            finally:
+                session.disable_counter()  # also on Ctrl-C
             after = session.timer_counter_configuration()
     except DeviceError as error:
         return Result("trigger", "fail", [*lines, str(error)])
@@ -381,8 +387,9 @@ def check_gate(bench: Bench) -> Result:
         type(trigger)(trigger.channel, GATE_TIMEOUT_SECONDS),
     )
     lines: list[str] = []
-    # The rest state at arm drives the loop-back high: a rising edge during the wait.
-    for edge, before, rest in (("rising", False, True), ("falling", True, False)):
+    # The rest state at arm switches the loop-back: one edge during the wait. The U3
+    # counter counts falling edges, so that order is tried first.
+    for edge, before, rest in (("falling", True, False), ("rising", False, True)):
         try:
             with bench.open_labjack(bench.rig.labjack_serial) as session:
                 session.write_digital_lines({bench.loopback: before})
@@ -423,18 +430,22 @@ def check_sync(bench: Bench) -> Result:
         return Result("sync", "skipped", ["needs --loopback CHANNEL wired to the trigger input"])
     rig = _loopback_rig(bench)
     recipe = _pulse_recipe(
-        rig, valves=[LOOPBACK], pulse_seconds=0.5, pulses=4, lead_seconds=0.5, count=1
+        rig,
+        valves=[LOOPBACK],
+        pulse_seconds=SYNC_PULSE_SECONDS,
+        pulses=SYNC_PULSES,
+        lead_seconds=SYNC_PULSE_SECONDS,
+        count=1,
     )
     status = _run(bench, recipe, rig)
     lines = [f"run directory: {status.run_directory}", status.message]
     if status.phase is not Phase.DONE:
         return Result("sync", "blocked" if "setpoint" in status.message else "fail", lines)
     rows = events_of(status)
-    edges = [
-        _seconds(row, "returned_run_seconds")
-        for row in rows
-        if row["event"] == "valve_command" and row["device"] == LOOPBACK
+    loopback_rows = [
+        row for row in rows if row["event"] == "valve_command" and row["device"] == LOOPBACK
     ]
+    edges = [_seconds(row, "returned_run_seconds") for row in loopback_rows]
     marks = [_seconds(row, "returned_run_seconds") for row in rows if row["event"] == "sync_pulse"]
     lags = []
     for mark in marks:
@@ -443,7 +454,8 @@ def check_sync(bench: Bench) -> Result:
             lags.append(mark - earlier[-1])
     lines.append(f"loop-back edges written: {len(edges)}; sync marks recorded: {len(marks)}")
     lines.append(f"edge to mark lag {milliseconds(lags)}")
-    expected = len(edges) // 2  # one polarity of each pulse counts
+    # One polarity of each pulse counts: as many marks as the loop-back opened.
+    expected = sum(row["value"] == "open" for row in loopback_rows)
     outcome = "pass" if len(marks) == expected else "fail"
     if outcome == "fail":
         lines.append(f"expected {expected} marks, one per pulse")
@@ -528,7 +540,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     if refusal is not None:
         print(f"Refused: {refusal}", file=sys.stderr)
         return 3
-    results = run_checks(bench, names)
+    try:
+        results = run_checks(bench, names)
+    except KeyboardInterrupt:
+        print(
+            "Interrupted. The check that was running ended in the safe state; "
+            "run `sniffler-bench safe` to confirm.",
+            file=sys.stderr,
+        )
+        return 130
     for result in results:
         print(result.render())
     failed = [result.check for result in results if result.outcome == "fail"]

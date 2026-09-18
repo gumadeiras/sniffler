@@ -7,7 +7,6 @@ own thread (see ``mfc_worker``), so a slow MFC read never delays a valve.
 import threading
 import time
 from collections.abc import Callable
-from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from importlib import metadata
@@ -109,7 +108,8 @@ class Status:
     # Run seconds at which the trial schedule started: 0.0 for a run that did not
     # wait, the trigger time for one that did, None until the trials start.
     trigger_seconds: float | None = None
-    # Sync pulses recorded so far; None when the rig has no trigger line.
+    # Sync pulses recorded so far; None until the record starts at the schedule
+    # start, and always None when the rig has no trigger line.
     sync_pulses: int | None = None
     sync_stopped_seconds: float | None = None
 
@@ -167,6 +167,7 @@ class Executor:
         self._started_at: float | None = None
         self._schedule_offset = 0.0
         self._sync: SyncRecorder | None = None
+        self._log_failure: str | None = None
         self._last_valves: dict[str, bool] | None = None
         self._last_setpoints: dict[str, float] = {}
 
@@ -261,22 +262,38 @@ class Executor:
             valves={},
             setpoints={},
         )
-        phase, message, full_scales = self._run_hardware(order)
-        self._record("run_end", detail=f"{phase.value}: {message}")
-        log.close(
-            ended_at=wall_time_now(),
-            outcome=phase.value,
-            message=message,
-            trigger_seconds=self.status.trigger_seconds,
-            sync_pulses=None if self._sync is None else self._sync.pulses,
-            sync_recording_stopped_seconds=None
-            if self._sync is None
-            else self._sync.stopped_seconds,
-            mfc_full_scales={name: list(scale) for name, scale in full_scales.items()},
-        )
-        self._log = None
-        lock.release()
-        return self._finish(phase, message)
+        try:
+            phase, message, full_scales = self._run_hardware(order)
+        except BaseException as error:
+            # Ctrl-C or a bug. The hardware branch applied the safe state; end the record.
+            phase, message, full_scales = Phase.FAILED, "The run was interrupted.", {}
+            if isinstance(error, Exception):
+                message = f"The run stopped on an unexpected error: {error!r}"
+            raise
+        finally:
+            self._record("run_end", detail=f"{phase.value}: {message}")
+            self._log = None
+            problems = []
+            try:
+                log.close(
+                    ended_at=wall_time_now(),
+                    outcome=phase.value,
+                    message=message,
+                    trigger_seconds=self.status.trigger_seconds,
+                    sync_pulses=None if self._sync is None else self._sync.pulses,
+                    sync_recording_stopped_seconds=None
+                    if self._sync is None
+                    else self._sync.stopped_seconds,
+                    mfc_full_scales={name: list(scale) for name, scale in full_scales.items()},
+                )
+            except RunLogError as error:
+                problems.append(str(error))
+            try:
+                lock.release()
+            except RunLockError as error:
+                problems.append(str(error))
+            self._publish(phase=phase, message=" ".join([message, *problems]))
+        return self.status
 
     def _run_hardware(self, order: list[str]) -> tuple[Phase, str, dict[str, tuple[float, str]]]:
         try:
@@ -305,8 +322,9 @@ class Executor:
             self._record("run_start", detail=f"planned order: {', '.join(order)}")
             if self._rig.trigger is not None:
                 self._arm_counter(labjack)
-            if self._wait_for_trigger:
-                self._await_trigger(labjack, worker)
+            baseline = self._await_trigger(labjack, worker) if self._wait_for_trigger else 0
+            if self._rig.trigger is not None:
+                self._start_sync(labjack, baseline)
             self._publish(
                 phase=Phase.RUNNING, message="Running.", trigger_seconds=self._schedule_offset
             )
@@ -333,11 +351,13 @@ class Executor:
                 return Phase.FAILED, "Aborted. " + " ".join(problems), worker.full_scales
             message = "Aborted. All valves closed, every flow zero."
             return Phase.ABORTED, message, worker.full_scales
-        except Exception as error:
+        except BaseException as error:
             self._publish(
                 phase=Phase.FINISHING, message="Error. Closing all valves, every flow to zero."
             )
             problems = self._apply_final_state(labjack, worker, safe_state(self._rig), "safe_state")
+            if not isinstance(error, Exception):
+                raise  # Ctrl-C: the safe state is applied; the caller ends the record.
             problems = [problem for problem in problems if problem != str(error)]
             message = f"{error} " + (" ".join(problems) or "All valves closed, every flow zero.")
             return Phase.FAILED, message, worker.full_scales
@@ -347,7 +367,7 @@ class Executor:
         return hardware.digital_channel_name(self._rig.trigger.channel)
 
     def _arm_counter(self, labjack: Any) -> None:
-        """Count pulses on the trigger line from now on, and record them from idle time."""
+        """Count pulses on the trigger line from now on."""
         assert self._rig.trigger is not None
         line = self._trigger_line()
         labjack.enable_counter(self._rig.trigger.channel)
@@ -360,6 +380,13 @@ class Executor:
             detail=f"pulse counter on {line}; line {'high' if level else 'low'}; "
             f"count before reset {before}",
         )
+
+    def _start_sync(self, labjack: Any, baseline: int) -> None:
+        """Record every pulse above ``baseline`` from the step thread's idle time.
+
+        The record starts when the schedule starts, so the gate pulse is the
+        baseline and not a mark.
+        """
         self._sync = SyncRecorder(
             labjack.read_counter,
             clock=self.elapsed_seconds,
@@ -367,6 +394,7 @@ class Executor:
             on_error=self._on_sync_error,
             on_stopped=self._on_sync_stopped,
         )
+        self._sync.start_from(baseline)
         self._publish(sync_pulses=0)
 
     def _on_sync_pulse(self, count: int, seconds: float, arrived: int) -> None:
@@ -397,14 +425,15 @@ class Executor:
         )
         self._publish(sync_stopped_seconds=seconds)
 
-    def _await_trigger(self, labjack: Any, worker: MfcWorker) -> None:
+    def _await_trigger(self, labjack: Any, worker: MfcWorker) -> int:
         """Hold the recipe end state and poll the counter until the schedule may start.
 
-        A stop request ends the wait and lets ``_run_trials`` end the run with no
-        trial. Abort and timeout end in the safe state through the callers.
+        Return the pulse count at the end of the wait. A stop request ends the wait
+        and lets ``_run_trials`` end the run with no trial. Abort and timeout end
+        in the safe state through the callers.
         """
         trigger = self._rig.trigger
-        assert trigger is not None and self._sync is not None
+        assert trigger is not None
         line = self._trigger_line()
         timeout = trigger.timeout_seconds
         self._publish(
@@ -414,7 +443,7 @@ class Executor:
         )
         self._record("trigger_wait", device=line, detail="counter armed")
         rest = self._recipe.shutdown
-        self._apply_step(rest, labjack, worker, {"detail": "rest state while waiting"})
+        self._apply_step(rest, labjack, worker, {}, detail="rest state while waiting")
         self._publish(valves=dict(rest.valves), setpoints=dict(rest.setpoints))
 
         def read_count() -> int:
@@ -432,7 +461,6 @@ class Executor:
         )
         if result.outcome in {TriggerOutcome.RECEIVED, TriggerOutcome.STARTED_NOW}:
             self._schedule_offset = result.ended_seconds
-            self._sync.start_from(result.count)
             self._record(
                 "trigger_received",
                 returned_run_seconds=result.ended_seconds,
@@ -440,7 +468,7 @@ class Executor:
                 value=result.outcome.value,
                 detail=result.describe(),
             )
-            return
+            return result.count
         self._record(
             "trigger_end", device=line, value=result.outcome.value, detail=result.describe()
         )
@@ -448,6 +476,7 @@ class Executor:
             raise _Aborted
         if result.outcome is TriggerOutcome.TIMED_OUT:
             raise DeviceError(f"No TTL pulse on {line} within {timeout:g} s.")
+        return result.count
 
     def _run_trials(self, order: list[str], labjack: Any, worker: MfcWorker) -> bool:
         origin = self._schedule_offset
@@ -498,6 +527,8 @@ class Executor:
                 raise _Aborted
             if worker.failed:
                 raise DeviceError(worker.error or "The MFC worker failed.")
+            if self._log_failure is not None:
+                raise RunLogError(self._log_failure)
             now = self.elapsed_seconds()
             remaining = deadline_seconds - now
             if remaining <= 0:
@@ -515,14 +546,21 @@ class Executor:
             self._abort.wait(wait)
 
     def _apply_step(
-        self, step: Step, labjack: Any, worker: MfcWorker, context: dict[str, Any]
+        self,
+        step: Step,
+        labjack: Any,
+        worker: MfcWorker,
+        context: dict[str, Any],
+        *,
+        detail: str = "",
     ) -> None:
+        """Command every changed device. ``context`` holds the schedule fields of each row."""
         for name, value in step.setpoints.items():
             if self._last_setpoints.get(name) != value:
-                worker.command(name, value, context)
+                worker.command(name, value, context, detail)
         self._last_setpoints = dict(step.setpoints)
         if step.valves != self._last_valves:
-            self._write_valves(labjack, step.valves, context)
+            self._write_valves(labjack, step.valves, context, detail=detail)
 
     def _write_valves(
         self,
@@ -530,6 +568,7 @@ class Executor:
         valves: dict[str, bool],
         context: dict[str, Any],
         *,
+        detail: str = "",
         record_all: bool = False,
     ) -> None:
         """Write every valve in one transaction and record each changed valve."""
@@ -552,6 +591,7 @@ class Executor:
                 value="open" if state else "closed",
                 returned_wall_time=wall_time,
                 sync_count=count,
+                detail=detail,
                 **context,
             )
         if sync is not None and count is not None:
@@ -563,7 +603,7 @@ class Executor:
         """Apply a final state to every device. Return the problems that remain."""
         problems: list[str] = []
         try:
-            self._write_valves(labjack, state.valves, {"detail": event}, record_all=True)
+            self._write_valves(labjack, state.valves, {}, detail=event, record_all=True)
         except DeviceError as error:
             problems.append(str(error))
         worker.finish(state.setpoints, event)
@@ -582,6 +622,8 @@ class Executor:
                 self._record("counter_restored", device=self._trigger_line())
             except DeviceError as error:
                 problems.append(str(error))
+        if self._log_failure is not None:
+            problems.append(self._log_failure)
         self._publish(valves=dict(state.valves), setpoints=dict(state.setpoints))
         self._record(event, detail="; ".join(problems) or "applied")
         return problems
@@ -589,15 +631,19 @@ class Executor:
     def _record(self, event: str, **fields: Any) -> None:
         """Write one event row, then hand the same fields to ``on_event``.
 
-        The callback must not block: the GUI side only puts into a queue.
+        The callback must not block: the GUI side only puts into a queue. A row
+        that cannot be written never stops a hardware command; the first failure
+        is kept and ends the run at the next step deadline.
         """
         log = self._log
         if log is None:
             return
         fields.setdefault("returned_run_seconds", self.elapsed_seconds())
         fields.setdefault("returned_wall_time", wall_time_now())
-        with suppress(RunLogError):
+        try:
             log.event(event, **fields)
+        except RunLogError as error:
+            self._log_failure = self._log_failure or str(error)
         if self._on_event is not None:
             self._on_event(Event(event, **fields))
 

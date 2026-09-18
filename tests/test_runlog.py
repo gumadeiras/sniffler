@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import Mock
 
 from sniffler.runlog import (
     LOCK_FILE_NAME,
@@ -42,6 +43,14 @@ class RunLockTests(unittest.TestCase):
             first.release()
             self.assertIsNone(active_run(runs))
             first.release()
+
+    def test_refuses_a_runs_directory_that_cannot_be_created(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            blocker = Path(directory, "file")
+            blocker.write_text("not a directory")
+
+            with self.assertRaisesRegex(RunLockError, "Cannot create the run lock"):
+                RunLock(blocker / "runs", blocker / "runs" / "x").acquire()
 
     def test_reports_an_unreadable_lock_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -97,6 +106,19 @@ class RunLogTests(unittest.TestCase):
             self.assertEqual(manifest["outcome"], "done")
             with self.assertRaisesRegex(RunLogError, "not open"):
                 log.event("late", returned_run_seconds=2.0)
+
+    def test_a_disk_error_on_a_row_is_a_run_log_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log = RunLog(Path(directory, "run"))
+            log.open({})
+            full_disk = Mock(wraps=log._events)
+            full_disk.flush.side_effect = OSError(28, "No space left on device")
+            log._events = full_disk
+
+            with self.assertRaisesRegex(RunLogError, "Cannot write events.csv.*No space left"):
+                log.event("late", returned_run_seconds=1.0)
+            log.sample("mfc", run_seconds=1.0, commanded_setpoint=None, state={})
+            log.close(outcome="failed")
 
     def test_refuses_to_reuse_a_run_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

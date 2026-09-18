@@ -14,7 +14,7 @@ from typing import Any
 
 from sniffler.hardware import DeviceError
 from sniffler.recipe import RigMap
-from sniffler.runlog import RunLog, wall_time_now
+from sniffler.runlog import RunLog, RunLogError, wall_time_now
 
 READ_FAILURE_LIMIT = 5
 
@@ -54,7 +54,7 @@ class MfcWorker(threading.Thread):
         self._log = log
         self._on_sample = on_sample
         self._interval = interval_seconds
-        self._commands: queue.Queue[tuple[str, float, float, dict[str, Any]]] = queue.Queue()
+        self._commands: queue.Queue[tuple[str, float, float, dict[str, Any], str]] = queue.Queue()
         self._finished = threading.Event()
         self._final: tuple[dict[str, float], str] | None = None
         self._commanded: dict[str, float | None] = dict.fromkeys(rig.mfcs)
@@ -66,8 +66,9 @@ class MfcWorker(threading.Thread):
     def failed(self) -> bool:
         return self.error is not None
 
-    def command(self, name: str, value: float, context: dict[str, Any]) -> None:
-        self._commands.put((name, value, self._clock(), context))
+    def command(self, name: str, value: float, context: dict[str, Any], detail: str = "") -> None:
+        """Queue a setpoint. ``context`` holds the schedule fields of the log row."""
+        self._commands.put((name, value, self._clock(), context, detail))
 
     def finish(self, setpoints: dict[str, float], detail: str) -> None:
         if self._final is None:
@@ -98,7 +99,7 @@ class MfcWorker(threading.Thread):
             self.ready.set()
             try:
                 await self._serve(sessions)
-            except DeviceError as error:
+            except (DeviceError, RunLogError) as error:
                 self.error = str(error)
             finally:
                 await self._apply_final(sessions)
@@ -156,11 +157,11 @@ class MfcWorker(threading.Thread):
         applied = False
         while True:
             try:
-                name, value, commanded_seconds, context = self._commands.get_nowait()
+                name, value, commanded_seconds, context, detail = self._commands.get_nowait()
             except queue.Empty:
                 return applied
             applied = True
-            await self._write(sessions, name, value, commanded_seconds, context)
+            await self._write(sessions, name, value, commanded_seconds, context, detail)
 
     async def _write(
         self,
@@ -169,6 +170,7 @@ class MfcWorker(threading.Thread):
         value: float,
         commanded_seconds: float,
         context: dict[str, Any],
+        detail: str,
     ) -> None:
         try:
             applied = await sessions[name].write_setpoint(value)
@@ -179,7 +181,7 @@ class MfcWorker(threading.Thread):
                 commanded_run_seconds=commanded_seconds,
                 device=name,
                 value=value,
-                detail=str(error),
+                detail=f"{detail}: {error}" if detail else str(error),
                 **context,
             )
             raise DeviceError(f"MFC {name}: {error}") from error
@@ -191,35 +193,36 @@ class MfcWorker(threading.Thread):
             commanded_run_seconds=commanded_seconds,
             device=name,
             value=applied,
+            detail=detail,
             **context,
         )
 
     async def _apply_final(self, sessions: dict[str, Any]) -> None:
+        """Write the final setpoint to every MFC. No log failure skips a device."""
         setpoints, detail = self._final or (dict.fromkeys(sessions, 0.0), "safe state")
         problems: list[str] = []
         for name, session in sessions.items():
+            value = setpoints.get(name, 0.0)
             commanded = self._clock()
             try:
-                applied = await session.write_setpoint(setpoints.get(name, 0.0))
+                applied = await session.write_setpoint(value)
             except DeviceError as error:
                 problems.append(f"MFC {name}: {error}")
+                event, logged, note = "error", value, f"{detail}: {error}"
+            else:
+                self._commanded[name] = applied
+                event, logged, note = "mfc_command", applied, detail
+            try:
                 self._log.event(
-                    "error",
+                    event,
                     returned_run_seconds=self._clock(),
                     commanded_run_seconds=commanded,
                     device=name,
-                    value=setpoints.get(name, 0.0),
-                    detail=f"{detail}: {error}",
+                    value=logged,
+                    detail=note,
                 )
-                continue
-            self._commanded[name] = applied
-            self._log.event(
-                "mfc_command",
-                returned_run_seconds=self._clock(),
-                commanded_run_seconds=commanded,
-                device=name,
-                value=applied,
-                detail=detail,
-            )
+            except RunLogError as error:
+                if str(error) not in problems:
+                    problems.append(str(error))
         if problems:
             self.error = " ".join([*([self.error] if self.error else []), *problems])

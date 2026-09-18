@@ -8,13 +8,14 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from sniffler.config import TriggerSettings
 from sniffler.executor import Event, Executor, Phase, Sample, Status
 from sniffler.fakes import FakeRig, PulseTrain
 from sniffler.hardware import DeviceError
 from sniffler.recipe import MfcMap, Recipe, RigMap, Schedule, Step, Trial
-from sniffler.runlog import LOCK_FILE_NAME, RunLock
+from sniffler.runlog import LOCK_FILE_NAME, RunLock, RunLog, RunLogError
 
 
 def make_mfc(name: str) -> MfcMap:
@@ -413,8 +414,8 @@ class TriggerTests(ExecutorTestCase):
         self.assertLess(kinds.index("counter_restored"), kinds.index("shutdown_state"))
         received = events[kinds.index("trigger_received")]
         self.assertEqual(received["value"], "received")
-        # The rest-state valve write took the first scripted count; the gate read the rest.
-        self.assertIn("25 reads", received["detail"])
+        # The counter is not read during the rest-state write; the gate read every count.
+        self.assertIn("26 reads", received["detail"])
         before = events[: kinds.index("trigger_received")]
         rest_valves = [event for event in before if event["event"] == "valve_command"]
         self.assertTrue(rest_valves)
@@ -434,6 +435,39 @@ class TriggerTests(ExecutorTestCase):
         self.assertEqual(manifest["sync_pulses"], 0)
         self.assertIsNone(manifest["sync_recording_stopped_seconds"])
         self.assertEqual(manifest["rig_map"]["trigger"], {"channel": 4, "timeout_seconds": None})
+
+    def test_a_pulse_that_arrives_before_the_rest_state_is_the_gate_not_a_mark(self) -> None:
+        # The rest-state valve packet would see this count if it read the counter.
+        self.rig.labjack.counts = [1]
+
+        status = self.executor(rig=RIG_WITH_TRIGGER, wait_for_trigger=True).run()
+
+        self.assertEqual(status.phase, Phase.DONE, status.message)
+        events = self.events(status)
+        self.assertNotIn("sync_pulse", [event["event"] for event in events])
+        self.assertEqual(status.sync_pulses, 0)
+        received = next(event for event in events if event["event"] == "trigger_received")
+        self.assertIn("1 reads", received["detail"])
+
+    def test_an_mfc_write_failure_during_the_wait_is_recorded_and_fails_safe(self) -> None:
+        self.rig.alicats["mfc-500"].write_error = "serial gone; the setpoint might have changed"
+
+        status = self.executor(rig=RIG_WITH_TRIGGER, wait_for_trigger=True).run()
+
+        self.assertEqual(status.phase, Phase.FAILED, status.message)
+        self.assertIn("MFC mfc-500: serial gone", status.message)
+        errors = [
+            event
+            for event in self.events(status)
+            if event["event"] == "error" and event["device"] == "mfc-500"
+        ]
+        self.assertEqual(
+            errors[0]["detail"],
+            "rest state while waiting: serial gone; the setpoint might have changed",
+        )
+        self.assertEqual(self.final_valves(), {8: False, 9: False, 16: False})
+        self.assertEqual(self.rig.alicats["mfc-2000"].setpoints[-1], 0.0, "no device is skipped")
+        self.assertTrue(self.rig.labjack.counter_restored)
 
     def test_records_every_sync_pulse_with_the_time_it_was_seen(self) -> None:
         # Pulses come from the clock, not from a per-read script: how many idle polls
@@ -623,6 +657,66 @@ class TriggerTests(ExecutorTestCase):
         manifest = self.manifest(status)
         self.assertFalse(manifest["wait_for_trigger"])
         self.assertIsNone(manifest["sync_pulses"])
+
+
+class RecordFailureTests(ExecutorTestCase):
+    """The safe state does not depend on the log, the lock, or the exception class."""
+
+    def test_an_interrupt_on_the_step_thread_still_ends_in_the_safe_state(self) -> None:
+        labjack = self.rig.labjack
+        write = labjack.write_digital_lines
+
+        def interrupt(states: dict[int, bool], *, read_counter: bool = False) -> int | None:
+            if labjack.writes:  # Ctrl-C in sniffler-bench lands on this thread, once
+                labjack.write_digital_lines = write
+                raise KeyboardInterrupt
+            return write(states, read_counter=read_counter)
+
+        labjack.write_digital_lines = interrupt
+        executor = self.executor()
+
+        with self.assertRaises(KeyboardInterrupt):
+            executor.run()
+
+        status = executor.status
+        self.assertEqual(status.phase, Phase.FAILED)
+        self.assertIn("interrupted", status.message)
+        self.assertEqual(self.final_valves(), {8: False, 9: False, 16: False})
+        self.assertEqual(self.rig.alicats["mfc-500"].setpoints[-1], 0.0)
+        self.assertEqual(self.rig.alicats["mfc-2000"].setpoints[-1], 0.0)
+        self.assertTrue(labjack.closed)
+        self.assertFalse((self.runs / LOCK_FILE_NAME).exists())
+        self.assertEqual(self.manifest(status)["outcome"], "failed")
+        kinds = [event["event"] for event in self.events(status)]
+        self.assertIn("safe_state", kinds)
+        self.assertEqual(kinds[-1], "run_end")
+
+    def test_a_log_write_failure_ends_the_run_in_the_safe_state(self) -> None:
+        real_event = RunLog.event
+        trials_started = 0
+
+        def failing_event(log: RunLog, event: str, **fields) -> None:
+            nonlocal trials_started
+            trials_started += event == "trial_start"
+            if trials_started > 1:  # the disk fills during the second trial
+                raise RunLogError("Cannot write events.csv: [Errno 28] No space left on device")
+            real_event(log, event, **fields)
+
+        with patch.object(RunLog, "event", failing_event):
+            status = self.executor().run()
+
+        self.assertEqual(status.phase, Phase.FAILED, status.message)
+        self.assertIn("Cannot write events.csv", status.message)
+        self.assertIn("All valves closed, every flow zero", status.message)
+        self.assertEqual(self.final_valves(), {8: False, 9: False, 16: False})
+        self.assertEqual(self.rig.alicats["mfc-500"].setpoints[-1], 0.0)
+        self.assertEqual(self.rig.alicats["mfc-2000"].setpoints[-1], 0.0)
+        self.assertFalse(any(thread.name == "sniffler-mfc" for thread in threading.enumerate()))
+        self.assertFalse((self.runs / LOCK_FILE_NAME).exists())
+        self.assertEqual(self.manifest(status)["outcome"], "failed")
+        kinds = [event["event"] for event in self.events(status)]
+        self.assertEqual(kinds.count("trial_end"), 1, "the rows up to the failure are kept")
+        self.assertEqual(kinds.count("trial_start"), 1, "the failed row is not in the file")
 
 
 if __name__ == "__main__":
