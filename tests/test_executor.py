@@ -11,7 +11,7 @@ from pathlib import Path
 
 from sniffler.config import TriggerSettings
 from sniffler.executor import Event, Executor, Phase, Sample, Status
-from sniffler.fakes import FakeRig
+from sniffler.fakes import FakeRig, PulseTrain
 from sniffler.hardware import DeviceError
 from sniffler.recipe import MfcMap, Recipe, RigMap, Schedule, Step, Trial
 from sniffler.runlog import LOCK_FILE_NAME, RunLock
@@ -435,10 +435,12 @@ class TriggerTests(ExecutorTestCase):
         self.assertIsNone(manifest["sync_recording_stopped_seconds"])
         self.assertEqual(manifest["rig_map"]["trigger"], {"channel": 4, "timeout_seconds": None})
 
-    def test_records_every_sync_pulse_with_its_trial_and_step(self) -> None:
-        # Counts are read about every 5 ms while the run is idle; the third read
-        # sees one pulse and a later read sees two more at once.
-        self.rig.labjack.counts = [0, 0, 1, 1, 1, 1, 3]
+    def test_records_every_sync_pulse_with_the_time_it_was_seen(self) -> None:
+        # Pulses come from the clock, not from a per-read script: how many idle polls
+        # happen before a valve write depends on the host's timer. Three pulses land
+        # inside the 0.3 s run; the fourth would arrive 60 ms after its end.
+        labjack = self.rig.labjack
+        labjack.pulse_train = PulseTrain(first_seconds=0.03, period_seconds=0.11)
         recipe = make_recipe(step_seconds=0.1, counts={"odor": 1, "blank": 1})
 
         status = self.executor(recipe, rig=RIG_WITH_TRIGGER).run()
@@ -447,20 +449,18 @@ class TriggerTests(ExecutorTestCase):
         events = self.events(status)
         pulses = [event for event in events if event["event"] == "sync_pulse"]
         self.assertEqual([event["value"] for event in pulses], ["1", "2", "3"])
-        self.assertEqual(
-            [event["detail"] for event in pulses],
-            ["", "2 pulses since the last read", "2 pulses since the last read"],
-        )
-        self.assertEqual(pulses[1]["returned_run_seconds"], pulses[2]["returned_run_seconds"])
+        seen = [float(event["returned_run_seconds"]) for event in pulses]
+        for arrived, seen_at in zip((0.03, 0.14, 0.25), seen, strict=True):
+            self.assertGreaterEqual(seen_at, arrived)
+        self.assertEqual(seen, sorted(seen))
         for event in pulses:
             self.assertEqual(event["device"], "FIO4")
             self.assertIn(event["trial_index"], {"0", "1"})
             self.assertTrue(event["trial_name"])
-            self.assertTrue(event["step_index"])
         self.assertEqual(status.sync_pulses, 3)
         self.assertEqual(status.trigger_seconds, 0.0)
         self.assertEqual(self.manifest(status)["sync_pulses"], 3)
-        self.assertGreater(self.rig.labjack.count_reads, 7)
+        self.assertGreater(labjack.count_reads, len(labjack.writes), "idle polls happened")
 
     def test_valve_commands_carry_the_count_and_mark_pulses_in_short_steps(self) -> None:
         # Steps of 20 ms never leave 30 ms of idle time, so the counter is read
@@ -492,7 +492,8 @@ class TriggerTests(ExecutorTestCase):
 
     def test_a_dead_counter_stops_the_record_and_the_run_goes_on(self) -> None:
         self.rig.labjack.counter_error = "usb gone"
-        recipe = make_recipe(step_seconds=0.1, counts={"odor": 1, "blank": 1})
+        # Long steps leave enough idle time for five polls on a host with coarse timers.
+        recipe = make_recipe(step_seconds=0.2, counts={"odor": 1, "blank": 1})
 
         status = self.executor(recipe, rig=RIG_WITH_TRIGGER).run()
 
@@ -501,20 +502,11 @@ class TriggerTests(ExecutorTestCase):
         )
         self.assertIn("usb gone", status.message)
 
-        # The counter dies after arming: the record stops, the trials finish.
+        # The counter dies after arming: the record stops, the trials finish. Only
+        # the idle polls fail; a failed valve packet would end the run instead.
         self.rig = type(self.rig)()
         labjack = self.rig.labjack
-        counts = iter([0, 0])
-
-        def read_counter(reset=False):
-            if reset:
-                return 0
-            try:
-                return next(counts)
-            except StopIteration:
-                raise DeviceError("usb gone") from None
-
-        labjack.read_counter = read_counter
+        labjack.poll_error = "usb gone"
         status = self.executor(recipe, rig=RIG_WITH_TRIGGER).run()
 
         self.assertEqual(status.phase, Phase.DONE, status.message)

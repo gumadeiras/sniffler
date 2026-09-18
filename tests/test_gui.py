@@ -500,10 +500,13 @@ class MainWindowTests(GuiTestCase):
         window.close()
 
     def test_sync_pulses_show_as_a_count_and_as_timeline_marks(self) -> None:
+        from sniffler.fakes import PulseTrain
         from sniffler.recipe import RigMap
 
         rig = RigMap(RIG.labjack_serial, RIG.valves, RIG.mfcs, TriggerSettings(4))
-        self.rig.labjack.counts = [0, 0, 1, 1, 1, 1, 3]
+        # Pulses at 0.05, 0.27 and 0.49 s inside the 0.6 s run; the fourth would
+        # arrive 0.11 s after its end.
+        self.rig.labjack.pulse_train = PulseTrain(first_seconds=0.05, period_seconds=0.22)
         plain = self.window()
         self.assertFalse(
             plain.run_view.status_panel._form.isRowVisible(plain.run_view.status_panel._sync)

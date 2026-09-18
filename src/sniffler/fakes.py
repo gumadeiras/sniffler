@@ -35,8 +35,10 @@ class FakeLabJack:
     """Record every multi-line write with the time it was made.
 
     The pulse counter answers from the ``counts`` list, one entry per read with the
-    last one held forever, so the tests are exact. With a ``pulse_train`` it counts
-    with the clock instead, from the last reset, so the demo sees pulses arrive.
+    last one held forever. With a ``pulse_train`` it counts with the clock instead,
+    from the last reset, which keeps a test exact when the number of idle polls
+    depends on the host. ``counter_error`` fails every counter packet, including the
+    valve writes that read it. ``poll_error`` fails only the idle polls.
     """
 
     def __init__(
@@ -55,6 +57,7 @@ class FakeLabJack:
         self.counter_channel: int | None = None
         self.counter_restored = False
         self.counter_error: str | None = None
+        self.poll_error: str | None = None
 
     def read_digital(self, channel: int) -> tuple[bool, bool]:
         return True, self.input_level
@@ -80,6 +83,11 @@ class FakeLabJack:
         if reset:
             self._reset_at = self._clock()
             return 0
+        if self.poll_error is not None:
+            raise DeviceError(self.poll_error)
+        return self._count()
+
+    def _count(self) -> int:
         if self.pulse_train is not None:
             count = self.pulse_train.count_at(self._clock() - self._reset_at)
         else:
@@ -98,7 +106,9 @@ class FakeLabJack:
         self.writes.append((time.perf_counter(), dict(states)))
         if not read_counter:
             return None
-        return self.read_counter()
+        if self.counter_error is not None:
+            raise DeviceError(self.counter_error)
+        return self._count()
 
 
 class FakeAlicat:
