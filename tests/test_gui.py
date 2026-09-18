@@ -464,7 +464,14 @@ class MainWindowTests(GuiTestCase):
         window.show()
         self.process_events()
         self.assertFalse(window.trigger_box.isHidden())
-        self.assertIn("FIO4 (rising edge)", window.trigger_box.text())
+        self.assertEqual(window.trigger_box.text(), "Wait for TTL")
+        self.assertIn("rising edge on FIO4", window.trigger_box.toolTip())
+        table = window.rig_panel._table
+        trigger_row = next(
+            row for row in range(table.rowCount()) if table.item(row, 0).text() == "TTL trigger"
+        )
+        self.assertEqual(table.item(trigger_row, 2).text(), "channel 4 (FIO4)")
+        self.assertEqual(table.item(trigger_row, 3).text(), "rising edge, no time limit")
         self.assertFalse(window.trigger_box.isChecked())
         window.trigger_box.setChecked(True)
         self.assertTrue(self.store().value("wait_for_trigger", type=bool))

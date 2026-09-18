@@ -93,6 +93,19 @@ class RigPanel(QWidget):
         for name, channel in rig.valves.items():
             line = hardware.digital_channel_name(channel)
             rows.append((name, "valve", f"channel {channel} ({line})", "—"))
+        if rig.trigger is not None:
+            trigger = rig.trigger
+            line = hardware.digital_channel_name(trigger.channel)
+            timeout = trigger.timeout_seconds
+            rows.append(
+                (
+                    "TTL trigger",
+                    "input",
+                    f"channel {trigger.channel} ({line})",
+                    f"{trigger.edge} edge"
+                    + (", no time limit" if timeout is None else f", timeout {timeout:g} s"),
+                )
+            )
         for name, mfc in rig.mfcs.items():
             limits = [f"minimum {mfc.minimum_flow:g}"]
             if mfc.maximum_flow is not None:
@@ -169,15 +182,15 @@ class MainWindow(QMainWindow):
         self.abort_button.setObjectName("consequential")
         self.abort_button.setToolTip("Stop now: close all valves and set every flow to zero.")
         self.stop_button.setToolTip("Finish the current trial, then apply the end state.")
-        self.trigger_box = QCheckBox("Wait for the TTL trigger")
+        self.trigger_box = QCheckBox("Wait for TTL")
         trigger = rig.trigger
         if trigger is None:
             self.trigger_box.hide()
         else:
             line = hardware.digital_channel_name(trigger.channel)
-            self.trigger_box.setText(f"Wait for the TTL trigger on {line} ({trigger.edge} edge)")
             self.trigger_box.setToolTip(
-                "The run holds the recipe end state until the edge arrives; then the trials start."
+                f"Hold the recipe end state until the {trigger.edge} edge on {line}, "
+                "then start the trials. The line and edge are set in lab.toml; see Config."
             )
             self.trigger_box.setChecked(self._store.value("wait_for_trigger", False, type=bool))
             self.trigger_box.toggled.connect(

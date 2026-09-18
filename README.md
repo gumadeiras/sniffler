@@ -372,8 +372,9 @@ window closes during a run. It is not configurable. The run log calls it
 
 ### Wait for a TTL trigger
 
-When `lab.toml` has a `[trigger]` table, the *Run* tab offers *Wait for the TTL
-trigger*. With it checked, *Start run* opens the devices, sets the trigger line
+When `lab.toml` has a `[trigger]` table, the *Run* tab offers *Wait for TTL*,
+and the *Config* tab shows the trigger line, edge, and time limit. With the box
+checked, *Start run* opens the devices, sets the trigger line
 to input, applies the recipe end state as the rest state (so a carrier flow can
 settle), and then polls the line. The phase shows `waiting`, the time shows how
 long the run has waited, and *Start now* ends the wait by hand. The trials
