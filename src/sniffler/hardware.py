@@ -187,6 +187,31 @@ class LabJackSession:
                 f"{name} was written, but its reported state cannot be read: {error}"
             ) from error
 
+    def read_digital(self, channel: int) -> tuple[bool, bool]:
+        """Return (is_input, level) of a digital line. Nothing on the device changes."""
+        name = self._require_digital(channel)
+        import u3
+
+        try:
+            direction, level = self._device.getFeedback(
+                u3.BitDirRead(IONumber=channel), u3.BitStateRead(IONumber=channel)
+            )
+        except Exception as error:
+            raise DeviceError(f"Cannot read {name}: {error}") from error
+        return not bool(direction), bool(level)
+
+    def configure_input(self, channel: int) -> None:
+        """Make a digital line an input. Call this once, on purpose, for a trigger line."""
+        name = self._require_digital(channel)
+        import u3
+
+        try:
+            self._device.getFeedback(u3.BitDirWrite(IONumber=channel, Direction=0))
+        except Exception as error:
+            raise DeviceError(
+                f"Cannot make {name} an input; its direction might have changed: {error}"
+            ) from error
+
     def write_digital_lines(self, states: dict[int, bool]) -> None:
         """Set several digital output lines in one device transaction.
 
@@ -260,6 +285,12 @@ def read_labjack_analog(channel: int, serial_number: int | None = None) -> float
     """Read a U3 input that is configured as analog."""
     with open_labjack(serial_number) as session:
         return session.read_analog(channel)
+
+
+def read_labjack_digital(channel: int, serial_number: int | None = None) -> tuple[bool, bool]:
+    """Return (is_input, level) of a U3 digital line without changing it."""
+    with open_labjack(serial_number) as session:
+        return session.read_digital(channel)
 
 
 def set_labjack_digital(channel: int, state: bool, serial_number: int | None = None) -> bool:

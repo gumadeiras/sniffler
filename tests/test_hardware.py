@@ -17,6 +17,7 @@ from sniffler.hardware import (
     open_alicat,
     open_labjack,
     read_labjack_analog,
+    read_labjack_digital,
     set_alicat_flow,
     set_labjack_digital,
 )
@@ -25,6 +26,14 @@ from sniffler.hardware import (
 class FakeFeedbackCommand:
     def __init__(self, **fields) -> None:
         self.fields = fields
+
+
+class FakeDirectionRead(FakeFeedbackCommand):
+    pass
+
+
+class FakeLevelRead(FakeFeedbackCommand):
+    pass
 
 
 class FakeU3:
@@ -39,11 +48,21 @@ class FakeU3:
         self.analog_mask = 0b00001111
         self.eio_analog_mask = 0b00000001
         self.config_reads = 0
+        self.line_is_output = 0
+        self.line_level = 1
         self.instances.append(self)
 
-    def getFeedback(self, *commands: FakeFeedbackCommand) -> list[None]:
+    def getFeedback(self, *commands: FakeFeedbackCommand) -> list[int | None]:
         self.feedback.append(list(commands))
-        return [None for _command in commands]
+        results: list[int | None] = []
+        for command in commands:
+            if isinstance(command, FakeDirectionRead):
+                results.append(self.line_is_output)
+            elif isinstance(command, FakeLevelRead):
+                results.append(self.line_level)
+            else:
+                results.append(None)
+        return results
 
     def getCalibrationData(self) -> None:
         self.calibrated = True
@@ -69,7 +88,12 @@ class LabJackTests(unittest.TestCase):
     def setUp(self) -> None:
         FakeU3.instances.clear()
         self.u3_module = types.SimpleNamespace(
-            U3=FakeU3, PortDirWrite=FakeFeedbackCommand, PortStateWrite=FakeFeedbackCommand
+            U3=FakeU3,
+            PortDirWrite=FakeFeedbackCommand,
+            PortStateWrite=FakeFeedbackCommand,
+            BitDirWrite=FakeFeedbackCommand,
+            BitDirRead=FakeDirectionRead,
+            BitStateRead=FakeLevelRead,
         )
 
     def test_routes_serial_calibrates_reads_and_closes(self) -> None:
@@ -151,6 +175,37 @@ class LabJackTests(unittest.TestCase):
         direction, state = device.feedback[0]
         self.assertEqual(direction.fields, {"Direction": [0, 6, 9], "WriteMask": [0, 6, 9]})
         self.assertEqual(state.fields, {"State": [0, 2, 9], "WriteMask": [0, 6, 9]})
+
+    def test_reads_a_digital_line_without_changing_it(self) -> None:
+        with patch.dict(sys.modules, {"u3": self.u3_module}):
+            is_input, level = read_labjack_digital(4)
+
+        device = FakeU3.instances[0]
+        self.assertEqual((is_input, level), (True, True))
+        self.assertEqual(len(device.feedback), 1)
+        direction, state = device.feedback[0]
+        self.assertIsInstance(direction, FakeDirectionRead)
+        self.assertIsInstance(state, FakeLevelRead)
+        self.assertEqual(direction.fields, {"IONumber": 4})
+        self.assertEqual(state.fields, {"IONumber": 4})
+
+        with patch.dict(sys.modules, {"u3": self.u3_module}), open_labjack() as session:
+            session._device.line_is_output = 1
+            session._device.line_level = 0
+            self.assertEqual(session.read_digital(9), (False, False))
+        with (
+            patch.dict(sys.modules, {"u3": self.u3_module}),
+            self.assertRaisesRegex(DeviceError, "FIO2 is configured as analog"),
+            open_labjack() as session,
+        ):
+            session.read_digital(2)
+
+    def test_configures_a_trigger_line_as_input_on_purpose(self) -> None:
+        with patch.dict(sys.modules, {"u3": self.u3_module}), open_labjack() as session:
+            session.configure_input(4)
+
+        (write,) = FakeU3.instances[0].feedback[0]
+        self.assertEqual(write.fields, {"IONumber": 4, "Direction": 0})
 
     def test_refuses_a_multi_line_write_that_includes_an_analog_line(self) -> None:
         with (

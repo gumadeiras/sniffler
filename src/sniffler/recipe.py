@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from sniffler.config import AlicatSettings, ConfigError, Settings
+from sniffler.config import AlicatSettings, ConfigError, Settings, TriggerSettings
 from sniffler.hardware import normalize_alicat_flow
 
 RECIPE_FORMAT = "sniffler-recipe/1"
@@ -57,12 +57,14 @@ class RigMap:
     labjack_serial: int | None
     valves: dict[str, int]
     mfcs: dict[str, MfcMap]
+    trigger: TriggerSettings | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "labjack_serial": self.labjack_serial,
             "valves": dict(self.valves),
             "mfcs": {name: mfc.to_dict() for name, mfc in self.mfcs.items()},
+            "trigger": None if self.trigger is None else self.trigger.to_dict(),
         }
 
     def with_full_scale(self, name: str, full_scale: float, flow_unit: str) -> "RigMap":
@@ -72,7 +74,7 @@ class RigMap:
         mfcs[name] = MfcMap(
             **{**current.__dict__, "full_scale": full_scale, "flow_unit": flow_unit}
         )
-        return RigMap(self.labjack_serial, dict(self.valves), mfcs)
+        return RigMap(self.labjack_serial, dict(self.valves), mfcs, self.trigger)
 
 
 def _mfc_map(name: str, alicat: AlicatSettings) -> MfcMap:
@@ -102,7 +104,7 @@ def rig_map_from_settings(settings: Settings) -> RigMap:
         for name, alicat in settings.alicats.items()
         if not (name == "default" and alicat.port is None)
     }
-    return RigMap(settings.labjack_serial, dict(settings.valves), mfcs)
+    return RigMap(settings.labjack_serial, dict(settings.valves), mfcs, settings.trigger)
 
 
 @dataclass(frozen=True)

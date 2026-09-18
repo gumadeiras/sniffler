@@ -25,6 +25,18 @@ class FakeLabJack:
         self.fail_on_write: int | None = None
         self.write_delay = 0.0
         self.closed = False
+        # The trigger input: one level per read, the last level held forever.
+        self.input_levels: list[bool] = [False]
+        self.input_reads = 0
+        self.inputs_configured: list[int] = []
+
+    def configure_input(self, channel: int) -> None:
+        self.inputs_configured.append(channel)
+
+    def read_digital(self, channel: int) -> tuple[bool, bool]:
+        level = self.input_levels[min(self.input_reads, len(self.input_levels) - 1)]
+        self.input_reads += 1
+        return True, level
 
     def write_digital_lines(self, states: dict[int, bool]) -> None:
         if self.fail_on_write is not None and len(self.writes) == self.fail_on_write:

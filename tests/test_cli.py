@@ -56,6 +56,16 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(output, "FIO4 reported state: high\n")
         set_digital.assert_called_once_with(4, True, 320123456)
 
+    @patch("sniffler.cli.hardware.read_labjack_digital", return_value=(True, True))
+    def test_reads_a_digital_line_for_the_trigger_wiring(self, read_digital) -> None:
+        status, output, errors = self.run_command(
+            ["labjack", "read-digital", "--channel", "4"], Settings(labjack_serial=320107153)
+        )
+
+        self.assertEqual((status, errors), (0, ""))
+        self.assertEqual(output, "FIO4 (input): high\n")
+        read_digital.assert_called_once_with(4, 320107153)
+
     @patch("sniffler.cli.hardware.set_alicat_flow", new_callable=AsyncMock)
     def test_routes_alicat_stop_connection(self, set_flow) -> None:
         set_flow.return_value = (0.0, None)

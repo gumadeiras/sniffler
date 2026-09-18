@@ -28,6 +28,19 @@ class AlicatSettings:
 
 
 DIGITAL_OUTPUT_CHANNELS = range(4, 20)
+TRIGGER_EDGES = ("rising", "falling")
+
+
+@dataclass(frozen=True)
+class TriggerSettings:
+    """A TTL input that can start the trial schedule of a run."""
+
+    channel: int
+    edge: str = "rising"
+    timeout_seconds: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"channel": self.channel, "edge": self.edge, "timeout_seconds": self.timeout_seconds}
 
 
 @dataclass(frozen=True)
@@ -40,6 +53,7 @@ class Settings:
     )
     valves: dict[str, int] = field(default_factory=dict)
     runs_directory: Path = Path("runs")
+    trigger: TriggerSettings | None = None
 
 
 def _table(data: dict[str, Any], key: str) -> dict[str, Any]:
@@ -141,6 +155,19 @@ def _parse_valves(valves: dict[str, Any]) -> dict[str, int]:
     return channels
 
 
+def _parse_trigger(trigger: dict[str, Any]) -> TriggerSettings | None:
+    if not trigger:
+        return None
+    _reject_unknown(trigger, {"channel", "edge", "timeout_seconds"}, "[trigger]")
+    if "channel" not in trigger:
+        raise ConfigError("Set trigger.channel to the digital channel that receives the TTL.")
+    return TriggerSettings(
+        channel=_value(trigger, "channel", int, None),
+        edge=_value(trigger, "edge", str, "rising"),
+        timeout_seconds=_value(trigger, "timeout_seconds", float, None),
+    )
+
+
 def load_settings(path: Path) -> Settings:
     """Load settings, or return defaults when the file does not exist."""
     if not path.exists():
@@ -151,7 +178,7 @@ def load_settings(path: Path) -> Settings:
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise ConfigError(f"Cannot read {path}: {error}") from error
 
-    _reject_unknown(data, {"labjack", "alicat", "valves", "runs"}, "configuration")
+    _reject_unknown(data, {"labjack", "alicat", "valves", "runs", "trigger"}, "configuration")
     labjack = _table(data, "labjack")
     alicat = _table(data, "alicat")
     runs = _table(data, "runs")
@@ -167,6 +194,7 @@ def load_settings(path: Path) -> Settings:
         # A relative path is next to lab.toml; an absolute path, or one that starts
         # with ~, is used as written.
         runs_directory=path.parent / Path(runs_directory).expanduser(),
+        trigger=_parse_trigger(_table(data, "trigger")),
     )
     _validate(settings)
     return settings
@@ -175,6 +203,18 @@ def load_settings(path: Path) -> Settings:
 def _validate(settings: Settings) -> None:
     if settings.labjack_serial is not None and settings.labjack_serial <= 0:
         raise ConfigError("labjack.serial must be greater than zero.")
+    trigger = settings.trigger
+    if trigger is not None:
+        if trigger.channel not in DIGITAL_OUTPUT_CHANNELS:
+            raise ConfigError("trigger.channel must be a digital channel from 4 through 19.")
+        used = [name for name, channel in settings.valves.items() if channel == trigger.channel]
+        if used:
+            raise ConfigError(f"trigger.channel {trigger.channel} is also the valve {used[0]!r}.")
+        if trigger.edge not in TRIGGER_EDGES:
+            raise ConfigError("trigger.edge must be rising or falling.")
+        timeout = trigger.timeout_seconds
+        if timeout is not None and (not math.isfinite(timeout) or timeout <= 0):
+            raise ConfigError("trigger.timeout_seconds must be finite and greater than zero.")
     for name, alicat in settings.alicats.items():
         location = "alicat" if name == "default" else f"alicat.{name}"
         if alicat.port is not None and not alicat.port.strip():

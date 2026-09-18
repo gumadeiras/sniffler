@@ -148,6 +148,15 @@ def _labjack_read_analog(arguments: argparse.Namespace, settings: Settings) -> N
     print(f"AIN{arguments.channel}: {voltage:.6f} V")
 
 
+def _labjack_read_digital(arguments: argparse.Namespace, settings: Settings) -> None:
+    is_input, level = hardware.read_labjack_digital(
+        arguments.channel, _labjack_serial(arguments, settings)
+    )
+    name = hardware.digital_channel_name(arguments.channel)
+    direction = "input" if is_input else "output"
+    print(f"{name} ({direction}): {'high' if level else 'low'}")
+
+
 def _labjack_set_digital(arguments: argparse.Namespace, settings: Settings) -> None:
     expected = arguments.state == "high"
     actual = hardware.set_labjack_digital(
@@ -227,6 +236,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_labjack_connection(read_analog)
     read_analog.set_defaults(handler=_labjack_read_analog)
+
+    read_digital = labjack_commands.add_parser(
+        "read-digital", help="Read the level of a digital line, such as the TTL trigger input."
+    )
+    read_digital.add_argument(
+        "--channel",
+        type=int,
+        choices=range(4, 20),
+        default=4,
+        help="Digital channel: 4-7 is FIO4-FIO7, 8-15 is EIO0-EIO7, 16-19 is CIO0-CIO3.",
+    )
+    _add_labjack_connection(read_digital)
+    read_digital.set_defaults(handler=_labjack_read_digital)
 
     set_digital = labjack_commands.add_parser(
         "set-digital", help="Set a digital output on FIO4 through FIO7, EIO0 through CIO3."
