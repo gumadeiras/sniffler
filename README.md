@@ -154,16 +154,16 @@ port = "/dev/cu.usbserial-SECOND"
 ``` A recipe that names a valve or MFC that is not in `lab.toml` is
 refused before any hardware command.
 
-To start runs from an external TTL pulse, name the input line in an optional
-`[trigger]` table. Use a spare FIO line (4 through 7): FIO0 to FIO3 are analog
-and the EIO and CIO lines drive the switching board. The input is 5 V
-tolerant; the grounds must be shared.
+To record TTL pulses from a recording system, and to start runs from its first
+pulse, name the input line in an optional `[trigger]` table. Use a spare line
+from FIO4 to EIO0 (channel 4 to 8), where the U3 can count pulses in hardware.
+FIO0 to FIO3 are analog and the other EIO and CIO lines drive the switching
+board. The input is 5 V tolerant; the grounds must be shared.
 
 ```toml
 [trigger]
 channel = 4
-edge = "rising"          # or "falling"
-# timeout_seconds = 300  # optional; without it the wait has no limit
+# timeout_seconds = 300  # optional limit for the wait at run start
 ```
 
 Run directories are written to `runs` next to `lab.toml`. Set another
@@ -370,22 +370,36 @@ The same all-off state is applied when a device command fails and when the
 window closes during a run. It is not configurable. The run log calls it
 `safe_state` and the end state `shutdown_state`.
 
-### Wait for a TTL trigger
+### Sync pulses and the TTL start
 
-When `lab.toml` has a `[trigger]` table, the *Run* tab offers *Wait for TTL*,
-and the *Config* tab shows the trigger line, edge, and time limit. With the box
-checked, *Start run* opens the devices, sets the trigger line
-to input, applies the recipe end state as the rest state (so a carrier flow can
-settle), and then polls the line. The phase shows `waiting`, the time shows how
-long the run has waited, and *Start now* ends the wait by hand. The trials
-start at the edge; the timeline and the time readout count from that moment.
+When `lab.toml` has a `[trigger]` table, every run counts the pulses on that
+line with the U3 hardware counter and records each one as a `sync_pulse` row in
+`events.csv`, with the running count and the trial and step it landed in. The
+counter is enabled when the run arms and the device configuration is restored
+when the run ends, on every exit path; both are logged. The step thread reads
+the counter only while the next valve deadline is more than 30 ms away, at
+most every 5 ms, so a read never delays a valve. A pulse shorter than one read
+still counts, because the counter saw it; its mark lands on the first read
+after it, so each mark is late by at most one read plus one USB round trip.
+The run log states the number of reads and the time per read. The Run tab
+shows the count, and the timeline marks each pulse. If the counter stops
+answering, the run goes on: the error is logged and, after five failed reads in
+a row, a `sync_recording_stopped` row and the manifest say from when the
+alignment data is missing.
 
-The edge counts only after the line was seen at the level before it, so an open
-input that floats high cannot start a rising-edge run. Each poll is one USB
-round trip, which sets the detection resolution; the run log records the
-number of reads and the time per read. *Stop after this trial* during the wait
-ends the run with no trial and the end state. *Abort now*, a device error, or
-the optional timeout end in the all-off state.
+The *Run* tab also offers *Wait for TTL*, and the *Config* tab shows the line
+and the time limit. With the box checked, *Start run* opens the devices, arms
+the counter, applies the recipe end state as the rest state (so a carrier flow
+can settle), and waits for the first pulse. The phase shows `waiting`, the time
+shows how long the run has waited, and *Start now* ends the wait by hand. The
+trials start at that pulse; the timeline and the time readout count from that
+moment, and that pulse is the baseline, not a sync mark. *Stop after this
+trial* during the wait ends the run with no trial and the end state. *Abort
+now*, a device error, or the optional timeout end in the all-off state.
+
+The U3 counter increments on one edge polarity (falling, according to the
+LabJackPython examples; confirm on the bench). For a pulse that only shifts
+the mark by the pulse width.
 
 ### Run directories
 
@@ -396,13 +410,14 @@ recipe name:
   trial order, the start time, the software version, the operator notes, and
   the outcome.
 - `events.csv`: every valve and MFC command, trial boundaries, stop and abort
-  requests, errors, the trigger wait and its end, and the end state or the
-  all-off state. The time columns are seconds since the run started, which is
+  requests, errors, the counter enable and restore, the trigger wait and its
+  end, every sync pulse, and the end state or the all-off state. The time columns are seconds since the run started, which is
   the moment the devices were ready. `returned_run_seconds` is when the command
   returned from the device. `commanded_run_seconds` is when it was sent.
   `scheduled_run_seconds` is the planned time. In a run that waited for a
   trigger, `trigger_received` marks the trial schedule origin and the manifest
-  repeats it as `trigger_seconds`.
+  repeats it as `trigger_seconds`. The manifest also holds `sync_pulses` and,
+  when the record stopped early, `sync_recording_stopped_seconds`.
 - `samples.csv`: each MFC reading next to the setpoint that was commanded.
 
 Every row is written when it happens, so a crashed run keeps its record.

@@ -1,4 +1,4 @@
-"""The whole run as one picture: a trial bar, one lane per valve, and a pink cursor."""
+"""The whole run as one picture: a trial bar, sync marks, one lane per valve, a pink cursor."""
 
 from collections.abc import Iterable
 
@@ -33,7 +33,13 @@ class TimelineWidget(QWidget):
         self._total = 0.0
         self._cursor = 0.0
         self._current: int | None = None
+        self._marks: list[float] = []
         self._fit()
+
+    def add_mark(self, schedule_seconds: float) -> None:
+        """Mark a sync pulse at its time on the trial schedule."""
+        self._marks.append(schedule_seconds)
+        self.update()
 
     def set_valves(self, valves: Iterable[str]) -> None:
         """Choose the lanes. Existing intervals are kept for valves that stay."""
@@ -79,6 +85,8 @@ class TimelineWidget(QWidget):
         self._total = start
         self._cursor = 0.0
         self._current = None
+        # Marks are not cleared here: a run's first pulses can reach the window in
+        # the same tick as its plan. ``clear`` at run start removes the old ones.
         self._fit()
         self.update()
 
@@ -93,6 +101,7 @@ class TimelineWidget(QWidget):
         self._total = 0.0
         self._cursor = 0.0
         self._current = None
+        self._marks = []
         self._fit()
         self.update()
 
@@ -129,6 +138,11 @@ class TimelineWidget(QWidget):
         bottom = self._paint_lanes(painter, bar, scale, label_width, metrics)
         if not planned:
             return
+        painter.setPen(QPen(QColor(theme.NAVY), 2))
+        for mark in self._marks:
+            if 0.0 <= mark <= self._total:
+                x = int(bar.left() + mark * scale)
+                painter.drawLine(x, int(bar.top()) - 6, x, int(bar.top()) - 1)
         cursor_x = bar.left() + self._cursor * scale
         painter.setPen(QPen(QColor(theme.PINK), 2))
         painter.drawLine(int(cursor_x), int(bar.top()) - 6, int(cursor_x), bottom + 2)
@@ -186,6 +200,11 @@ class TimelineWidget(QWidget):
             painter.setPen(QPen(QColor(theme.NAVY)))
             painter.drawText(x + square + 4, baseline, name)
             x += square + 4 + metrics.horizontalAdvance(name) + theme.SECTION_GAP
+        if self._marks:
+            painter.setPen(QPen(QColor(theme.NAVY), 2))
+            painter.drawLine(x + 2, baseline - square, x + 2, baseline)
+            painter.setPen(QPen(QColor(theme.NAVY)))
+            painter.drawText(x + 8, baseline, "sync pulse")
         painter.setPen(QPen(QColor(theme.INK_SOFT)))
         painter.drawText(
             self.rect().adjusted(2, 0, -2, -2),

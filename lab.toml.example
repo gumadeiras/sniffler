@@ -38,9 +38,10 @@ D = 11
 # [runs]
 # directory = "runs"
 
-# Optional. A TTL input that can start the trials of a run. Use a spare FIO
-# line (4-7); the input is 5 V tolerant and the grounds must be shared.
+# Optional. The TTL input from the recording system. Its pulses are counted in
+# hardware and recorded with each run, and its first pulse can start the
+# trials. Use a spare line from FIO4 to EIO0 (channel 4-8); the input is 5 V
+# tolerant and the grounds must be shared.
 # [trigger]
 # channel = 4
-# edge = "rising"          # or "falling"
-# timeout_seconds = 300    # leave out for no limit
+# timeout_seconds = 300    # optional limit for the wait at run start

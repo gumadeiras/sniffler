@@ -344,6 +344,7 @@ class StatusPanel(QWidget):
         self._message.setFixedHeight(2 * QFontMetrics(self._message.font()).lineSpacing() + 4)
         self._trial = _one_line(QLabel("—"))
         self._time = _one_line(QLabel("—"))
+        self._sync = _one_line(QLabel("—"))
         self._time.setFont(_fixed_font())
         self._directory = _one_line(QLabel("—"))
         self._valves = _one_line(QLabel("—"))
@@ -381,7 +382,10 @@ class StatusPanel(QWidget):
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         form.addRow("Trial", self._trial)
         form.addRow("Time", self._time)
+        form.addRow("Sync pulses", self._sync)
         form.addRow("Run folder", self._directory)
+        self._form = form
+        form.setRowVisible(self._sync, False)
         form.addRow("Valves", self._valves)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -421,6 +425,12 @@ class StatusPanel(QWidget):
                 f"{name} {'open' if state else 'closed'}" for name, state in status.valves.items()
             )
         )
+        self._form.setRowVisible(self._sync, status.sync_pulses is not None)
+        if status.sync_pulses is not None:
+            text = str(status.sync_pulses)
+            if status.sync_stopped_seconds is not None:
+                text += f", record stopped at {status.sync_stopped_seconds:.1f} s"
+            self._sync.setText(text)
         self._show_steps(status)
         self.show_time(status, elapsed)
 
@@ -486,6 +496,7 @@ class RunView(QWidget):
         self.plot = MfcPlot(rig)
         self.cue_latencies: list[float] = []
         self._plot_span = 0.0
+        self._trigger_seconds = 0.0
         # The panel scrolls when a large rig needs more lines than the window has;
         # overlapping text is never an option.
         scroll = QScrollArea()
@@ -530,8 +541,10 @@ class RunView(QWidget):
         self.plot.clear()
         self.cue_latencies = []
         self._plot_span = 0.0
+        self._trigger_seconds = 0.0
 
     def show_status(self, status: Status, elapsed: float, recipe: Recipe | None) -> None:
+        self._trigger_seconds = status.trigger_seconds or 0.0
         if recipe is not None and status.order:
             if status.phase == Phase.STARTING:
                 self.timeline.set_plan(recipe, status.order)
@@ -545,7 +558,13 @@ class RunView(QWidget):
         self.timeline.set_progress(_schedule_seconds(status, elapsed), status.trial_index)
 
     def show_event(self, event: Event, elapsed: float) -> None:
-        """A valve that opens during a step makes the squirrel sniff; its name stays while open."""
+        """A valve that opens during a step makes the squirrel sniff; its name stays while open.
+
+        A sync pulse becomes a mark on the timeline, at its time on the trial schedule.
+        """
+        if event.event == "sync_pulse":
+            self.timeline.add_mark(event.returned_run_seconds - self._trigger_seconds)
+            return
         if event.event != "valve_command":
             return
         squirrel = self.status_panel.squirrel

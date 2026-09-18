@@ -499,6 +499,32 @@ class MainWindowTests(GuiTestCase):
         self.assertIn("s left", window.run_view.status_panel._time.text())
         window.close()
 
+    def test_sync_pulses_show_as_a_count_and_as_timeline_marks(self) -> None:
+        from sniffler.recipe import RigMap
+
+        rig = RigMap(RIG.labjack_serial, RIG.valves, RIG.mfcs, TriggerSettings(4))
+        self.rig.labjack.counts = [0, 0, 1, 1, 1, 1, 3]
+        plain = self.window()
+        self.assertFalse(
+            plain.run_view.status_panel._form.isRowVisible(plain.run_view.status_panel._sync)
+        )
+        window = self.window(rig=rig)
+        window.editor.set_recipe(make_recipe(0.1))
+
+        window.start_run()
+        self.wait_until(lambda: not window.controller.is_running)
+        self.process_events(0.2)
+
+        panel = window.run_view.status_panel
+        status = window.controller.executor.status
+        self.assertEqual(status.phase, Phase.DONE, status.message)
+        self.assertTrue(panel._form.isRowVisible(panel._sync))
+        self.assertEqual(panel._sync.text(), "3")
+        marks = window.run_view.timeline._marks
+        self.assertEqual(len(marks), 3)
+        self.assertTrue(all(0.0 <= mark <= status.planned_seconds for mark in marks))
+        window.close()
+
     def test_window_close_during_a_run_aborts_and_forces_the_safe_state(self) -> None:
         window = self.window()
         window.editor.set_recipe(make_recipe(1.0))
