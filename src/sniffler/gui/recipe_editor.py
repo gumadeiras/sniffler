@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -55,6 +56,16 @@ def _step_view(model: StepTableModel) -> QTableView:
     view.horizontalHeader().setMinimumSectionSize(7 * theme.UNIT)
     view.verticalHeader().setDefaultSectionSize(theme.ROW_PX)
     return view
+
+
+def _strip_table_chrome(view: QTableView) -> None:
+    """Show a one-row table as a strip of cells: no row number, no selection, no blank space."""
+    view.verticalHeader().setVisible(False)
+    view.setSelectionMode(QAbstractItemView.NoSelection)
+    view.setFrameShape(QFrame.NoFrame)
+    view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    view.setFixedHeight(view.horizontalHeader().sizeHint().height() + theme.ROW_PX)
 
 
 def _tool(name: str, text: str) -> QToolButton:
@@ -139,7 +150,7 @@ class RecipeEditor(QWidget):
         self._shutdown = StepTableModel(rig, with_duration=False, parent=self)
         self._shutdown.set_rows([self._shutdown.blank_row()])
         self._shutdown_view = _step_view(self._shutdown)
-        self._shutdown_view.setMaximumHeight(3 * theme.ROW_PX + 2)
+        _strip_table_chrome(self._shutdown_view)
         self._shutdown_view.setAccessibleName("End state")
 
         self._problems = QLabel()
