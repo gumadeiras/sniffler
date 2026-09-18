@@ -36,6 +36,7 @@ from sniffler.runlog import (
     new_run_directory,
     wall_time_now,
 )
+from sniffler.trigger import TriggerOutcome, wait_for_trigger
 
 SPIN_SECONDS = 0.015
 MFC_READ_FAILURE_LIMIT = 5
@@ -53,6 +54,7 @@ def software_version() -> str:
 class Phase(StrEnum):
     IDLE = "idle"
     STARTING = "starting"
+    WAITING = "waiting"
     RUNNING = "running"
     FINISHING = "finishing"
     DONE = "done"
@@ -115,6 +117,9 @@ class Status:
     valves: dict[str, bool] = field(default_factory=dict)
     setpoints: dict[str, float] = field(default_factory=dict)
     stop_requested: bool = False
+    # Run seconds at which the trial schedule started: 0.0 for a run that did not
+    # wait, the trigger time for one that did, None until the trials start.
+    trigger_seconds: float | None = None
 
     @property
     def trial_name(self) -> str | None:
@@ -339,6 +344,7 @@ class Executor:
         on_event: Callable[[Event], None] | None = None,
         sample_interval_seconds: float = DEFAULT_SAMPLE_INTERVAL_SECONDS,
         clock: Callable[[], float] = time.perf_counter,
+        wait_for_trigger: bool = False,
     ) -> None:
         self._recipe = recipe
         self._rig = rig
@@ -356,9 +362,12 @@ class Executor:
         self._status = Status()
         self._stop = threading.Event()
         self._abort = threading.Event()
+        self._start_now = threading.Event()
+        self._wait_for_trigger = wait_for_trigger
         self._thread: threading.Thread | None = None
         self._log: RunLog | None = None
         self._started_at: float | None = None
+        self._schedule_offset = 0.0
         self._last_valves: dict[str, bool] | None = None
         self._last_setpoints: dict[str, float] = {}
 
@@ -396,6 +405,10 @@ class Executor:
         self._abort.set()
         self._record("abort_requested")
 
+    def start_now(self) -> None:
+        """End a trigger wait and start the trials now. No effect at any other time."""
+        self._start_now.set()
+
     def run(self) -> Status:
         """Run the recipe on the calling thread and return the final status."""
         try:
@@ -404,6 +417,12 @@ class Executor:
         except RecipeError as error:
             return self._finish(
                 Phase.FAILED, f"The recipe is not valid. No hardware was used.\n{error}"
+            )
+        if self._wait_for_trigger and self._rig.trigger is None:
+            return self._finish(
+                Phase.FAILED,
+                "lab.toml has no [trigger] table, so the run cannot wait for a TTL trigger. "
+                "No hardware was used.",
             )
 
         directory = new_run_directory(self._runs_directory, self._recipe.name)
@@ -424,6 +443,7 @@ class Executor:
                     "resolved_trial_order": order,
                     "planned_duration_seconds": resolved_duration_seconds(self._recipe, order),
                     "sample_interval_seconds": self._sample_interval,
+                    "wait_for_trigger": self._wait_for_trigger,
                     "recipe": self._recipe.to_dict(),
                     "rig_map": self._rig.to_dict(),
                 }
@@ -448,6 +468,7 @@ class Executor:
             ended_at=wall_time_now(),
             outcome=phase.value,
             message=message,
+            trigger_seconds=self.status.trigger_seconds,
             mfc_full_scales={name: list(scale) for name, scale in full_scales.items()},
         )
         self._log = None
@@ -479,7 +500,11 @@ class Executor:
                 raise DeviceError(worker.error or "The MFCs are not ready.")
             self._started_at = self._clock()
             self._record("run_start", detail=f"planned order: {', '.join(order)}")
-            self._publish(phase=Phase.RUNNING, message="Running.")
+            if self._wait_for_trigger:
+                self._await_trigger(labjack, worker)
+            self._publish(
+                phase=Phase.RUNNING, message="Running.", trigger_seconds=self._schedule_offset
+            )
             stopped = self._run_trials(order, labjack, worker)
             self._publish(phase=Phase.FINISHING, message="Applying the end state.")
             problems = self._apply_final_state(
@@ -512,25 +537,80 @@ class Executor:
             message = f"{error} " + (" ".join(problems) or "All valves closed, every flow zero.")
             return Phase.FAILED, message, worker.full_scales
 
+    def _await_trigger(self, labjack: Any, worker: _MfcWorker) -> None:
+        """Hold the recipe end state and poll the trigger line until the schedule may start.
+
+        A stop request ends the wait and lets ``_run_trials`` end the run with no
+        trial. Abort and timeout end in the safe state through the callers.
+        """
+        trigger = self._rig.trigger
+        assert trigger is not None
+        line = hardware.digital_channel_name(trigger.channel)
+        timeout = trigger.timeout_seconds
+        self._publish(
+            phase=Phase.WAITING,
+            message=f"Waiting for the {trigger.edge} edge on {line}."
+            + (f" Timeout {timeout:g} s." if timeout is not None else ""),
+        )
+        labjack.configure_input(trigger.channel)
+        self._record(
+            "trigger_wait", device=line, detail=f"{trigger.edge} edge; {line} set to input"
+        )
+        rest = self._recipe.shutdown
+        self._apply_step(rest, labjack, worker, {"detail": "rest state while waiting"})
+        self._publish(valves=dict(rest.valves), setpoints=dict(rest.setpoints))
+
+        def read() -> bool:
+            if worker.failed:
+                raise DeviceError(worker.error or "The MFC worker failed.")
+            return labjack.read_digital(trigger.channel)[1]
+
+        result = wait_for_trigger(
+            read,
+            trigger,
+            clock=self.elapsed_seconds,
+            should_abort=self._abort.is_set,
+            should_stop=self._stop.is_set,
+            should_start_now=self._start_now.is_set,
+        )
+        if result.outcome in {TriggerOutcome.RECEIVED, TriggerOutcome.STARTED_NOW}:
+            self._schedule_offset = result.ended_seconds
+            self._record(
+                "trigger_received",
+                returned_run_seconds=result.ended_seconds,
+                device=line,
+                value=result.outcome.value,
+                detail=result.describe(),
+            )
+            return
+        self._record(
+            "trigger_end", device=line, value=result.outcome.value, detail=result.describe()
+        )
+        if result.outcome is TriggerOutcome.ABORTED:
+            raise _Aborted
+        if result.outcome is TriggerOutcome.TIMED_OUT:
+            raise DeviceError(f"No {trigger.edge} edge on {line} within {timeout:g} s.")
+
     def _run_trials(self, order: list[str], labjack: Any, worker: _MfcWorker) -> bool:
+        origin = self._schedule_offset
         cumulative = 0.0
         for trial_index, name in enumerate(order):
             if self._stop.is_set():
                 return True
             trial = self._recipe.trial(name)
             self._publish(
-                trial_index=trial_index, trial_started_seconds=cumulative, step_index=None
+                trial_index=trial_index, trial_started_seconds=origin + cumulative, step_index=None
             )
             self._record(
                 "trial_start",
-                scheduled_run_seconds=cumulative,
+                scheduled_run_seconds=origin + cumulative,
                 trial_index=trial_index,
                 trial_name=name,
             )
             for step_index, step in enumerate(trial.steps):
-                self._wait_until(cumulative, worker)
+                self._wait_until(origin + cumulative, worker)
                 context = {
-                    "scheduled_run_seconds": cumulative,
+                    "scheduled_run_seconds": origin + cumulative,
                     "trial_index": trial_index,
                     "trial_name": name,
                     "step_index": step_index,
@@ -538,16 +618,16 @@ class Executor:
                 self._apply_step(step, labjack, worker, context)
                 self._publish(
                     step_index=step_index,
-                    step_started_seconds=cumulative,
+                    step_started_seconds=origin + cumulative,
                     step_duration_seconds=step.duration_seconds,
                     valves=dict(step.valves),
                     setpoints=dict(step.setpoints),
                 )
                 cumulative += step.duration_seconds or 0.0
-            self._wait_until(cumulative, worker)
+            self._wait_until(origin + cumulative, worker)
             self._record(
                 "trial_end",
-                scheduled_run_seconds=cumulative,
+                scheduled_run_seconds=origin + cumulative,
                 trial_index=trial_index,
                 trial_name=name,
             )

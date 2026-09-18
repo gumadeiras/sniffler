@@ -8,6 +8,7 @@ import time
 import unittest
 from pathlib import Path
 
+from sniffler.config import TriggerSettings
 from sniffler.executor import Event, Executor, Phase, Sample, Status
 from sniffler.fakes import FakeRig
 from sniffler.recipe import MfcMap, Recipe, RigMap, Schedule, Step, Trial
@@ -32,6 +33,8 @@ def step(duration: float, odor_1: bool = False, odor_2: bool = False, flow: floa
         {"mfc-500": flow, "mfc-2000": 1000.0},
     )
 
+
+RIG_WITH_TRIGGER = RigMap(RIG.labjack_serial, RIG.valves, RIG.mfcs, TriggerSettings(4))
 
 SHUTDOWN = Step(
     None, {"odor-1": False, "odor-2": False, "final": True}, {"mfc-500": 50.0, "mfc-2000": 0.0}
@@ -61,10 +64,10 @@ class ExecutorTestCase(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def executor(self, recipe: Recipe | None = None, **options) -> Executor:
+    def executor(self, recipe: Recipe | None = None, rig: RigMap = RIG, **options) -> Executor:
         return Executor(
             recipe or make_recipe(),
-            RIG,
+            rig,
             seed=3,
             runs_directory=self.runs,
             operator_notes="fake bench",
@@ -379,6 +382,128 @@ class TimingTests(ExecutorTestCase):
         self.assertEqual(executor.status.valves, SHUTDOWN.valves)
         self.assertEqual(executor.status.setpoints, SHUTDOWN.setpoints)
         self.assertFalse(executor.is_alive)
+
+
+class TriggerTests(ExecutorTestCase):
+    def test_waits_for_the_edge_then_starts_the_schedule_from_it(self) -> None:
+        self.rig.labjack.input_levels = [False] * 25 + [True]
+
+        status = self.executor(rig=RIG_WITH_TRIGGER, wait_for_trigger=True).run()
+
+        self.assertEqual(status.phase, Phase.DONE, status.message)
+        self.assertEqual(self.rig.labjack.inputs_configured, [4])
+        self.assertEqual(self.rig.labjack.input_reads, 26)
+        events = self.events(status)
+        kinds = [event["event"] for event in events]
+        self.assertLess(kinds.index("run_start"), kinds.index("trigger_wait"))
+        self.assertLess(kinds.index("trigger_wait"), kinds.index("trigger_received"))
+        self.assertLess(kinds.index("trigger_received"), kinds.index("trial_start"))
+        received = events[kinds.index("trigger_received")]
+        self.assertEqual(received["value"], "received")
+        self.assertIn("26 reads", received["detail"])
+        before = events[: kinds.index("trigger_received")]
+        rest_valves = [event for event in before if event["event"] == "valve_command"]
+        self.assertTrue(rest_valves)
+        self.assertTrue(all(event["detail"] == "rest state while waiting" for event in rest_valves))
+        self.assertEqual(self.rig.labjack.writes[0][1], {8: False, 9: False, 16: True})
+        self.assertEqual(self.rig.alicats["mfc-500"].setpoints[0], 50.0)
+        trigger_seconds = float(received["returned_run_seconds"])
+        self.assertGreater(trigger_seconds, 0.0)
+        first_trial = events[kinds.index("trial_start")]
+        self.assertEqual(float(first_trial["scheduled_run_seconds"]), trigger_seconds)
+        # The CSV keeps six decimals; the status and manifest keep the full float.
+        self.assertAlmostEqual(status.trigger_seconds, trigger_seconds, places=6)
+        manifest = self.manifest(status)
+        self.assertTrue(manifest["wait_for_trigger"])
+        self.assertEqual(manifest["trigger_seconds"], status.trigger_seconds)
+        self.assertEqual(
+            manifest["rig_map"]["trigger"],
+            {"channel": 4, "edge": "rising", "timeout_seconds": None},
+        )
+
+    def test_abort_during_the_wait_forces_the_safe_state(self) -> None:
+        executor = self.executor(rig=RIG_WITH_TRIGGER, wait_for_trigger=True)
+        executor.start()
+        self.wait_for(lambda: executor.status.phase == Phase.WAITING)
+
+        executor.abort()
+        executor.join(10)
+        status = executor.status
+
+        self.assertEqual(status.phase, Phase.ABORTED, status.message)
+        self.assertEqual(self.final_valves(), {8: False, 9: False, 16: False})
+        self.assertEqual(self.rig.alicats["mfc-500"].setpoints[-1], 0.0)
+        kinds = [event["event"] for event in self.events(status)]
+        self.assertNotIn("trial_start", kinds)
+        self.assertNotIn("trigger_received", kinds)
+        end = next(event for event in self.events(status) if event["event"] == "trigger_end")
+        self.assertEqual(end["value"], "aborted")
+
+    def test_stop_during_the_wait_ends_with_the_end_state_and_no_trial(self) -> None:
+        executor = self.executor(rig=RIG_WITH_TRIGGER, wait_for_trigger=True)
+        executor.start()
+        self.wait_for(lambda: executor.status.phase == Phase.WAITING)
+
+        executor.request_stop()
+        executor.join(10)
+        status = executor.status
+
+        self.assertEqual(status.phase, Phase.STOPPED, status.message)
+        self.assertIn("Stopped after trial 0 of 4", status.message)
+        self.assertEqual(self.final_valves(), {8: False, 9: False, 16: True})
+        self.assertEqual(self.rig.alicats["mfc-500"].setpoints[-1], 50.0)
+        kinds = [event["event"] for event in self.events(status)]
+        self.assertNotIn("trial_start", kinds)
+        self.assertIn("trigger_end", kinds)
+
+    def test_start_now_skips_the_rest_of_the_wait(self) -> None:
+        executor = self.executor(rig=RIG_WITH_TRIGGER, wait_for_trigger=True)
+        executor.start()
+        self.wait_for(lambda: executor.status.phase == Phase.WAITING)
+
+        executor.start_now()
+        executor.join(10)
+        status = executor.status
+
+        self.assertEqual(status.phase, Phase.DONE, status.message)
+        received = next(e for e in self.events(status) if e["event"] == "trigger_received")
+        self.assertEqual(received["value"], "started now")
+        self.assertAlmostEqual(
+            status.trigger_seconds, float(received["returned_run_seconds"]), places=6
+        )
+
+    def test_timeout_and_a_floating_high_line_fail_safe(self) -> None:
+        rig = RigMap(
+            RIG.labjack_serial, RIG.valves, RIG.mfcs, TriggerSettings(4, timeout_seconds=0.05)
+        )
+        self.rig.labjack.input_levels = [True]
+
+        status = self.executor(rig=rig, wait_for_trigger=True).run()
+
+        self.assertEqual(status.phase, Phase.FAILED, status.message)
+        self.assertIn("No rising edge on FIO4 within 0.05 s", status.message)
+        self.assertEqual(self.final_valves(), {8: False, 9: False, 16: False})
+        self.assertEqual(self.rig.alicats["mfc-500"].setpoints[-1], 0.0)
+        end = next(e for e in self.events(status) if e["event"] == "trigger_end")
+        self.assertEqual(end["value"], "timed out")
+        self.assertIn("never showed the level before the edge", end["detail"])
+
+    def test_wait_without_a_trigger_table_is_refused_before_hardware(self) -> None:
+        status = self.executor(rig=RIG, wait_for_trigger=True).run()
+
+        self.assertEqual(status.phase, Phase.FAILED)
+        self.assertIn("no [trigger] table", status.message)
+        self.assertEqual(self.rig.labjack_opens, 0)
+        self.assertFalse(self.runs.exists())
+
+    def test_a_run_without_the_wait_never_touches_the_trigger_line(self) -> None:
+        status = self.executor(rig=RIG_WITH_TRIGGER).run()
+
+        self.assertEqual(status.phase, Phase.DONE, status.message)
+        self.assertEqual(self.rig.labjack.input_reads, 0)
+        self.assertEqual(self.rig.labjack.inputs_configured, [])
+        self.assertEqual(status.trigger_seconds, 0.0)
+        self.assertFalse(self.manifest(status)["wait_for_trigger"])
 
 
 if __name__ == "__main__":
