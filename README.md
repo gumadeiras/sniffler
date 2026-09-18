@@ -154,6 +154,18 @@ port = "/dev/cu.usbserial-SECOND"
 ``` A recipe that names a valve or MFC that is not in `lab.toml` is
 refused before any hardware command.
 
+To start runs from an external TTL pulse, name the input line in an optional
+`[trigger]` table. Use a spare FIO line (4 through 7): FIO0 to FIO3 are analog
+and the EIO and CIO lines drive the switching board. The input is 5 V
+tolerant; the grounds must be shared.
+
+```toml
+[trigger]
+channel = 4
+edge = "rising"          # or "falling"
+# timeout_seconds = 300  # optional; without it the wait has no limit
+```
+
 Run directories are written to `runs` next to `lab.toml`. Set another
 location with an optional `[runs]` table. A relative path is next to
 `lab.toml`; an absolute path, or one that starts with `~`, is used as written.
@@ -214,10 +226,17 @@ Set FIO4 high:
 uv run sniffler labjack set-digital --channel 4 --state high
 ```
 
-The first command supports AIN0 through AIN3. The second command supports
-channels 4 through 19: 4-7 is FIO4-FIO7, 8-15 is EIO0-EIO7, and 16-19 is
-CIO0-CIO3. Each command checks the current analog or digital configuration
-before it continues.
+Read the level of a digital line, for example the TTL trigger input:
+
+```text
+uv run sniffler labjack read-digital --channel 4
+```
+
+The first command supports AIN0 through AIN3. The other two support channels
+4 through 19: 4-7 is FIO4-FIO7, 8-15 is EIO0-EIO7, and 16-19 is CIO0-CIO3.
+Each command checks the current analog or digital configuration before it
+continues. `read-digital` reports the line direction and level and changes
+nothing; an open input reads high because of the internal pull-up.
 
 The EIO and CIO lines are the control lines for a PS12DC power switching board.
 Switches S0 through S7 map to EIO0 through EIO7, which is channel 8 through 15.
@@ -351,6 +370,22 @@ The same all-off state is applied when a device command fails and when the
 window closes during a run. It is not configurable. The run log calls it
 `safe_state` and the end state `shutdown_state`.
 
+### Wait for a TTL trigger
+
+When `lab.toml` has a `[trigger]` table, the *Run* tab offers *Wait for the TTL
+trigger*. With it checked, *Start run* opens the devices, sets the trigger line
+to input, applies the recipe end state as the rest state (so a carrier flow can
+settle), and then polls the line. The phase shows `waiting`, the time shows how
+long the run has waited, and *Start now* ends the wait by hand. The trials
+start at the edge; the timeline and the time readout count from that moment.
+
+The edge counts only after the line was seen at the level before it, so an open
+input that floats high cannot start a rising-edge run. Each poll is one USB
+round trip, which sets the detection resolution; the run log records the
+number of reads and the time per read. *Stop after this trial* during the wait
+ends the run with no trial and the end state. *Abort now*, a device error, or
+the optional timeout end in the all-off state.
+
 ### Run directories
 
 Each run writes one directory under `runs`, named by the start time and the
@@ -360,10 +395,13 @@ recipe name:
   trial order, the start time, the software version, the operator notes, and
   the outcome.
 - `events.csv`: every valve and MFC command, trial boundaries, stop and abort
-  requests, errors, and the end state or the all-off state. The time columns are
-  seconds since the run started. `returned_run_seconds` is when the command
+  requests, errors, the trigger wait and its end, and the end state or the
+  all-off state. The time columns are seconds since the run started, which is
+  the moment the devices were ready. `returned_run_seconds` is when the command
   returned from the device. `commanded_run_seconds` is when it was sent.
-  `scheduled_run_seconds` is the planned time.
+  `scheduled_run_seconds` is the planned time. In a run that waited for a
+  trigger, `trigger_received` marks the trial schedule origin and the manifest
+  repeats it as `trigger_seconds`.
 - `samples.csv`: each MFC reading next to the setpoint that was commanded.
 
 Every row is written when it happens, so a crashed run keeps its record.

@@ -37,3 +37,10 @@ D = 11
 # file; an absolute path or one starting with ~ is used as written.
 # [runs]
 # directory = "runs"
+
+# Optional. A TTL input that can start the trials of a run. Use a spare FIO
+# line (4-7); the input is 5 V tolerant and the grounds must be shared.
+# [trigger]
+# channel = 4
+# edge = "rising"          # or "falling"
+# timeout_seconds = 300    # leave out for no limit

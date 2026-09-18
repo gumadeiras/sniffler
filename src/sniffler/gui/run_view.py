@@ -80,6 +80,7 @@ class RunController(QObject):
         seed: int,
         runs_directory: Path,
         operator_notes: str,
+        wait_for_trigger: bool = False,
         **factories: Callable[..., Any],
     ) -> None:
         if self.is_running:
@@ -91,6 +92,7 @@ class RunController(QObject):
             seed,
             runs_directory,
             operator_notes=operator_notes,
+            wait_for_trigger=wait_for_trigger,
             on_status=self._statuses.put,
             on_sample=self._samples.put,
             on_event=self._events.put,  # a queue put only; nothing else may run here
@@ -106,6 +108,10 @@ class RunController(QObject):
     def abort(self) -> None:
         if self._executor is not None:
             self._executor.abort()
+
+    def start_now(self) -> None:
+        if self._executor is not None:
+            self._executor.start_now()
 
     def abort_and_wait(self, timeout_seconds: float = 30.0) -> Status | None:
         """Abort now and block until the executor has applied the safe state."""
@@ -142,6 +148,11 @@ class RunController(QObject):
                 if self._last is not final:
                     self.status_changed.emit(final)
                 self.finished.emit(final)
+
+
+def _schedule_seconds(status: Status, elapsed: float) -> float:
+    """Seconds since the trial schedule started; run seconds minus the trigger time."""
+    return elapsed - (status.trigger_seconds or 0.0)
 
 
 def _fixed_font() -> Any:
@@ -411,11 +422,14 @@ class StatusPanel(QWidget):
         self.show_time(status, elapsed)
 
     def show_time(self, status: Status, elapsed: float) -> None:
-        if status.phase in {Phase.RUNNING, Phase.FINISHING} or status.phase.is_final:
-            remaining = max(0.0, status.planned_seconds - elapsed)
+        if status.phase == Phase.WAITING:
+            self._time.setText(f"{elapsed:.1f} s waiting for the trigger")
+        elif status.phase in {Phase.RUNNING, Phase.FINISHING} or status.phase.is_final:
+            schedule = _schedule_seconds(status, elapsed)
+            remaining = max(0.0, status.planned_seconds - schedule)
             width = len(f"{status.planned_seconds:.1f}")
             self._time.setText(
-                f"{elapsed:{width}.1f} s of {status.planned_seconds:.1f} s, "
+                f"{schedule:{width}.1f} s of {status.planned_seconds:.1f} s, "
                 f"{remaining:{width}.1f} s left"
             )
         else:
@@ -468,6 +482,7 @@ class RunView(QWidget):
         self.timeline = TimelineWidget()
         self.plot = MfcPlot(rig)
         self.cue_latencies: list[float] = []
+        self._plot_span = 0.0
         # The panel scrolls when a large rig needs more lines than the window has;
         # overlapping text is never an option.
         scroll = QScrollArea()
@@ -511,13 +526,20 @@ class RunView(QWidget):
         self.preview(recipe)
         self.plot.clear()
         self.cue_latencies = []
+        self._plot_span = 0.0
 
     def show_status(self, status: Status, elapsed: float, recipe: Recipe | None) -> None:
-        if recipe is not None and status.order and status.phase == Phase.STARTING:
-            self.timeline.set_plan(recipe, status.order)
-            self.plot.set_ranges(recipe, status.planned_seconds)
+        if recipe is not None and status.order:
+            if status.phase == Phase.STARTING:
+                self.timeline.set_plan(recipe, status.order)
+            # The plot shows run seconds, so a run that waited for a trigger needs
+            # room for the wait as well as the schedule. Fixed once per span.
+            span = (status.trigger_seconds or 0.0) + status.planned_seconds
+            if span != self._plot_span:
+                self._plot_span = span
+                self.plot.set_ranges(recipe, span)
         self.status_panel.show_status(status, elapsed)
-        self.timeline.set_progress(elapsed, status.trial_index)
+        self.timeline.set_progress(_schedule_seconds(status, elapsed), status.trial_index)
 
     def show_event(self, event: Event, elapsed: float) -> None:
         """A valve that opens during a step makes the squirrel sniff; its name stays while open."""
@@ -534,4 +556,4 @@ class RunView(QWidget):
 
     def tick(self, status: Status, elapsed: float) -> None:
         self.status_panel.show_time(status, elapsed)
-        self.timeline.set_progress(elapsed, status.trial_index)
+        self.timeline.set_progress(_schedule_seconds(status, elapsed), status.trial_index)

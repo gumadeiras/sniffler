@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings
 
-from sniffler.config import AlicatSettings, Settings
+from sniffler.config import AlicatSettings, Settings, TriggerSettings
 from sniffler.fakes import FakeRig
 from sniffler.gui.app import MainWindow
 from sniffler.recipe import Recipe, Schedule, Step, Trial, rig_map_from_settings
@@ -28,6 +28,8 @@ def demo_settings(runs_directory: Path = RUNS_DIRECTORY) -> Settings:
         },
         valves=dict(VALVES),
         runs_directory=runs_directory,
+        # The fake input stays low, so a demo run that waits ends with Start now.
+        trigger=TriggerSettings(channel=4),
     )
 
 

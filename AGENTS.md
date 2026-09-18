@@ -23,13 +23,17 @@ Two programs share one hardware layer:
   map, the block randomizer, recipe files.
 - `executor.py`: runs a recipe on its own thread; MFC traffic on a second thread; publishes
   status. `runlog.py`: run directory, manifest, `events.csv`, `samples.csv`, lock file.
+- `trigger.py`: the poll loop that waits for a TTL edge before the trial schedule starts.
+  Run seconds count from device readiness; the schedule origin is the trigger time.
 - `gui/`: PySide6 and pyqtgraph. The user chose them over `tkinter` because the recipe editor
   needs an editable table; do not reopen that choice.
 
 ## Rules
 
 - Use ASD-STE100 Simplified Technical English in user text and documentation.
-- Keep hardware changes explicit. Do not change an output as part of a status command.
+- Keep hardware changes explicit. Do not change an output as part of a status command. A
+  digital read never changes a line direction; only the executor makes the configured
+  trigger line an input, once, when a run arms.
 - Refuse writes when units, safe ranges, channel mode, or controller mode are not valid. The
   Alicat setpoint-source guard (source `U`) stays; do not weaken it to make a device work.
 - State when a failed write might have changed physical hardware.

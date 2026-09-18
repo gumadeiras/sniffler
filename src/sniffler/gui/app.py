@@ -13,6 +13,7 @@ from PySide6.QtCore import QSettings, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -168,6 +169,24 @@ class MainWindow(QMainWindow):
         self.abort_button.setObjectName("consequential")
         self.abort_button.setToolTip("Stop now: close all valves and set every flow to zero.")
         self.stop_button.setToolTip("Finish the current trial, then apply the end state.")
+        self.trigger_box = QCheckBox("Wait for the TTL trigger")
+        trigger = rig.trigger
+        if trigger is None:
+            self.trigger_box.hide()
+        else:
+            line = hardware.digital_channel_name(trigger.channel)
+            self.trigger_box.setText(f"Wait for the TTL trigger on {line} ({trigger.edge} edge)")
+            self.trigger_box.setToolTip(
+                "The run holds the recipe end state until the edge arrives; then the trials start."
+            )
+            self.trigger_box.setChecked(self._store.value("wait_for_trigger", False, type=bool))
+            self.trigger_box.toggled.connect(
+                lambda checked: self._store.setValue("wait_for_trigger", checked)
+            )
+        self.start_now_button = QPushButton("Start now")
+        self.start_now_button.setObjectName("consequential")
+        self.start_now_button.setToolTip("End the wait for the trigger and start the trials now.")
+        self.start_now_button.hide()
 
         self._build_layout()
         self._build_menu()
@@ -195,9 +214,11 @@ class MainWindow(QMainWindow):
         form.addRow("Recipe", self._recipe_summary)
         form.addRow("Seed", self._seed_label)
         form.addRow("Notes", self._notes)
+        form.addRow(self.trigger_box)
         buttons = QHBoxLayout()
         buttons.setSpacing(theme.GAP)
         buttons.addWidget(self.start_button)
+        buttons.addWidget(self.start_now_button)
         buttons.addWidget(self.stop_button)
         buttons.addWidget(self.abort_button)
         buttons.addStretch(1)
@@ -249,6 +270,7 @@ class MainWindow(QMainWindow):
         self.start_button.clicked.connect(self.start_run)
         self.stop_button.clicked.connect(self.controller.request_stop)
         self.abort_button.clicked.connect(self.controller.abort)
+        self.start_now_button.clicked.connect(self.controller.start_now)
         self.controller.status_changed.connect(self._on_status)
         self.controller.sample_received.connect(self._on_sample)
         self.controller.event_received.connect(self._on_event)
@@ -475,17 +497,21 @@ class MainWindow(QMainWindow):
             seed,
             runs_directory,
             self._notes.toPlainText(),
+            wait_for_trigger=self._rig.trigger is not None and self.trigger_box.isChecked(),
             **self._factories,
         )
         self._tick.start()
 
     def _set_running(self, running: bool) -> None:
         self.start_button.setEnabled(not running and not self.editor.problems())
+        self.trigger_box.setEnabled(not running)
+        self.start_now_button.setVisible(False)
         self.stop_button.setEnabled(running)
         self.abort_button.setEnabled(running)
 
     def _on_status(self, status: Status) -> None:
         self.run_view.show_status(status, self.controller.elapsed_seconds(), self._running_recipe)
+        self.start_now_button.setVisible(status.phase == Phase.WAITING)
         if status.stop_requested:
             self.stop_button.setEnabled(False)
 

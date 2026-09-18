@@ -19,7 +19,7 @@ except ImportError as error:  # pragma: no cover - depends on the platform libra
 else:
     IMPORT_ERROR = ""
 
-from sniffler.config import AlicatSettings, Settings
+from sniffler.config import AlicatSettings, Settings, TriggerSettings
 from sniffler.executor import Phase
 from sniffler.fakes import FakeRig
 from sniffler.recipe import Recipe, Schedule, Step, Trial, rig_map_from_settings
@@ -436,12 +436,12 @@ class MainWindowTests(GuiTestCase):
     def store(self) -> "QSettings":
         return QSettings(str(Path(self.temporary.name, "gui.ini")), QSettings.IniFormat)
 
-    def window(self, answer=QMessageBox.Yes, reduced_motion: bool = True):
+    def window(self, answer=QMessageBox.Yes, reduced_motion: bool = True, rig=RIG):
         from sniffler.gui.app import MainWindow
 
         window = MainWindow(
             self.settings,
-            RIG,
+            rig,
             open_labjack=self.rig.open_labjack,
             open_alicat=self.rig.open_alicat,
             store=self.store(),
@@ -451,6 +451,45 @@ class MainWindowTests(GuiTestCase):
         window.warnings = []
         window._tell = lambda _parent, title, text: window.warnings.append((title, text))
         return window
+
+    def test_trigger_wait_is_offered_only_when_configured_and_start_now_ends_it(self) -> None:
+        from sniffler.recipe import RigMap
+
+        plain = self.window()
+        self.assertTrue(plain.trigger_box.isHidden())
+        self.assertTrue(plain.start_now_button.isHidden())
+
+        rig = RigMap(RIG.labjack_serial, RIG.valves, RIG.mfcs, TriggerSettings(4))
+        window = self.window(rig=rig)
+        window.show()
+        self.process_events()
+        self.assertFalse(window.trigger_box.isHidden())
+        self.assertIn("FIO4 (rising edge)", window.trigger_box.text())
+        self.assertFalse(window.trigger_box.isChecked())
+        window.trigger_box.setChecked(True)
+        self.assertTrue(self.store().value("wait_for_trigger", type=bool))
+        window.editor.set_recipe(make_recipe(0.05))
+
+        window.start_run()
+        self.wait_until(lambda: window.controller.executor.status.phase == Phase.WAITING)
+        self.process_events(0.15)
+        self.assertTrue(window.start_now_button.isVisible())
+        self.assertFalse(window.trigger_box.isEnabled())
+        self.assertTrue(window.abort_button.isEnabled())
+        self.assertIn("waiting for the trigger", window.run_view.status_panel._time.text())
+        self.assertEqual(self.rig.labjack.inputs_configured, [4])
+        self.assertEqual(self.rig.labjack.writes[0][1], {8: False, 9: False, 16: True})
+
+        window.start_now_button.click()
+        self.wait_until(lambda: not window.controller.is_running)
+        self.process_events(0.2)
+        status = window.controller.executor.status
+        self.assertEqual(status.phase, Phase.DONE, status.message)
+        self.assertGreater(status.trigger_seconds, 0.0)
+        self.assertTrue(window.start_now_button.isHidden())
+        self.assertTrue(window.trigger_box.isEnabled())
+        self.assertIn("s left", window.run_view.status_panel._time.text())
+        window.close()
 
     def test_window_close_during_a_run_aborts_and_forces_the_safe_state(self) -> None:
         window = self.window()
