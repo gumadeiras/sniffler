@@ -1,15 +1,13 @@
 """Run a recipe on the rig from a worker thread and publish its progress.
 
 Step timing runs on the executor thread. The MFC serial traffic runs on its
-own thread with its own event loop, so a slow MFC read never delays a valve.
+own thread (see ``mfc_worker``), so a slow MFC read never delays a valve.
 """
 
-import asyncio
-import queue
 import threading
 import time
 from collections.abc import Callable
-from contextlib import AsyncExitStack, suppress
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from importlib import metadata
@@ -18,6 +16,7 @@ from typing import Any
 
 from sniffler import hardware
 from sniffler.hardware import DeviceError
+from sniffler.mfc_worker import MfcWorker, Sample
 from sniffler.recipe import (
     Recipe,
     RecipeError,
@@ -39,7 +38,6 @@ from sniffler.runlog import (
 from sniffler.trigger import TriggerOutcome, wait_for_trigger
 
 SPIN_SECONDS = 0.015
-MFC_READ_FAILURE_LIMIT = 5
 MFC_WORKER_TIMEOUT_SECONDS = 15.0
 DEFAULT_SAMPLE_INTERVAL_SECONDS = 0.1
 
@@ -65,18 +63,6 @@ class Phase(StrEnum):
     @property
     def is_final(self) -> bool:
         return self in {Phase.DONE, Phase.STOPPED, Phase.ABORTED, Phase.FAILED}
-
-
-@dataclass(frozen=True)
-class Sample:
-    """One MFC reading next to the setpoint that was commanded at that time."""
-
-    mfc: str
-    run_seconds: float
-    commanded_setpoint: float | None
-    device_setpoint: float | None
-    mass_flow: float | None
-    wall_time: str
 
 
 @dataclass(frozen=True)
@@ -130,200 +116,6 @@ class Status:
 
 class _Aborted(Exception):
     """Abort now was requested."""
-
-
-def _number(value: object) -> float | None:
-    return float(value) if isinstance(value, int | float) else None
-
-
-class _MfcWorker(threading.Thread):
-    """Own the MFC connections in one event loop, off the step-timing thread."""
-
-    def __init__(
-        self,
-        rig: RigMap,
-        open_alicat: Callable[..., Any],
-        clock: Callable[[], float],
-        log: RunLog,
-        on_sample: Callable[[Sample], None] | None,
-        interval_seconds: float,
-    ) -> None:
-        super().__init__(name="sniffler-mfc", daemon=True)
-        self._rig = rig
-        self._open_alicat = open_alicat
-        self._clock = clock
-        self._log = log
-        self._on_sample = on_sample
-        self._interval = interval_seconds
-        self._commands: queue.Queue[tuple[str, float, float, dict[str, Any]]] = queue.Queue()
-        self._finished = threading.Event()
-        self._final: tuple[dict[str, float], str] | None = None
-        self._commanded: dict[str, float | None] = dict.fromkeys(rig.mfcs)
-        self.ready = threading.Event()
-        self.error: str | None = None
-        self.full_scales: dict[str, tuple[float, str]] = {}
-
-    @property
-    def failed(self) -> bool:
-        return self.error is not None
-
-    def command(self, name: str, value: float, context: dict[str, Any]) -> None:
-        self._commands.put((name, value, self._clock(), context))
-
-    def finish(self, setpoints: dict[str, float], detail: str) -> None:
-        if self._final is None:
-            self._final = (dict(setpoints), detail)
-        self._finished.set()
-
-    def run(self) -> None:
-        try:
-            asyncio.run(self._main())
-        except Exception as error:
-            self.error = self.error or f"The MFC worker failed: {error}"
-        finally:
-            self.ready.set()
-
-    async def _main(self) -> None:
-        sessions: dict[str, Any] = {}
-        async with AsyncExitStack() as stack:
-            for name, mfc in self._rig.mfcs.items():
-                try:
-                    session = await stack.enter_async_context(
-                        self._open_alicat(mfc.port, mfc.unit, mfc.baud_rate, mfc.timeout_seconds)
-                    )
-                    self.full_scales[name] = await session.prepare_setpoints()
-                except DeviceError as error:
-                    self.error = f"MFC {name}: {error}"
-                    return
-                sessions[name] = session
-            self.ready.set()
-            try:
-                await self._serve(sessions)
-            except DeviceError as error:
-                self.error = str(error)
-            finally:
-                await self._apply_final(sessions)
-
-    async def _serve(self, sessions: dict[str, Any]) -> None:
-        due = dict.fromkeys(sessions, self._clock())
-        failures = dict.fromkeys(sessions, 0)
-        while not self._finished.is_set():
-            if await self._apply_commands(sessions):
-                continue
-            if not due:
-                await asyncio.sleep(0.01)
-                continue
-            name = min(due, key=due.__getitem__)
-            now = self._clock()
-            if due[name] > now:
-                await asyncio.sleep(min(due[name] - now, 0.005))
-                continue
-            due[name] = max(due[name] + self._interval, now)
-            try:
-                state = await sessions[name].read()
-            except DeviceError as error:
-                failures[name] += 1
-                self._log.event(
-                    "error", returned_run_seconds=self._clock(), device=name, detail=str(error)
-                )
-                if failures[name] >= MFC_READ_FAILURE_LIMIT:
-                    raise DeviceError(
-                        f"MFC {name} did not answer {failures[name]} reads in a row: {error}"
-                    ) from error
-                continue
-            failures[name] = 0
-            run_seconds = self._clock()
-            wall_time = wall_time_now()
-            self._log.sample(
-                name,
-                run_seconds=run_seconds,
-                commanded_setpoint=self._commanded[name],
-                state=state,
-                wall_time=wall_time,
-            )
-            if self._on_sample is not None:
-                self._on_sample(
-                    Sample(
-                        mfc=name,
-                        run_seconds=run_seconds,
-                        commanded_setpoint=self._commanded[name],
-                        device_setpoint=_number(state.get("setpoint")),
-                        mass_flow=_number(state.get("mass_flow")),
-                        wall_time=wall_time,
-                    )
-                )
-
-    async def _apply_commands(self, sessions: dict[str, Any]) -> bool:
-        applied = False
-        while True:
-            try:
-                name, value, commanded_seconds, context = self._commands.get_nowait()
-            except queue.Empty:
-                return applied
-            applied = True
-            await self._write(sessions, name, value, commanded_seconds, context)
-
-    async def _write(
-        self,
-        sessions: dict[str, Any],
-        name: str,
-        value: float,
-        commanded_seconds: float,
-        context: dict[str, Any],
-    ) -> None:
-        try:
-            applied = await sessions[name].write_setpoint(value)
-        except DeviceError as error:
-            self._log.event(
-                "error",
-                returned_run_seconds=self._clock(),
-                commanded_run_seconds=commanded_seconds,
-                device=name,
-                value=value,
-                detail=str(error),
-                **context,
-            )
-            raise DeviceError(f"MFC {name}: {error}") from error
-        returned = self._clock()
-        self._commanded[name] = applied
-        self._log.event(
-            "mfc_command",
-            returned_run_seconds=returned,
-            commanded_run_seconds=commanded_seconds,
-            device=name,
-            value=applied,
-            **context,
-        )
-
-    async def _apply_final(self, sessions: dict[str, Any]) -> None:
-        setpoints, detail = self._final or (dict.fromkeys(sessions, 0.0), "safe state")
-        problems: list[str] = []
-        for name, session in sessions.items():
-            commanded = self._clock()
-            try:
-                applied = await session.write_setpoint(setpoints.get(name, 0.0))
-            except DeviceError as error:
-                problems.append(f"MFC {name}: {error}")
-                self._log.event(
-                    "error",
-                    returned_run_seconds=self._clock(),
-                    commanded_run_seconds=commanded,
-                    device=name,
-                    value=setpoints.get(name, 0.0),
-                    detail=f"{detail}: {error}",
-                )
-                continue
-            self._commanded[name] = applied
-            self._log.event(
-                "mfc_command",
-                returned_run_seconds=self._clock(),
-                commanded_run_seconds=commanded,
-                device=name,
-                value=applied,
-                detail=detail,
-            )
-        if problems:
-            self.error = " ".join([*([self.error] if self.error else []), *problems])
 
 
 class Executor:
@@ -484,7 +276,7 @@ class Executor:
 
     def _run_on(self, labjack: Any, order: list[str]) -> tuple[Phase, str, dict[str, Any]]:
         assert self._log is not None
-        worker = _MfcWorker(
+        worker = MfcWorker(
             self._rig,
             self._open_alicat,
             self.elapsed_seconds,
@@ -537,7 +329,7 @@ class Executor:
             message = f"{error} " + (" ".join(problems) or "All valves closed, every flow zero.")
             return Phase.FAILED, message, worker.full_scales
 
-    def _await_trigger(self, labjack: Any, worker: _MfcWorker) -> None:
+    def _await_trigger(self, labjack: Any, worker: MfcWorker) -> None:
         """Hold the recipe end state and poll the trigger line until the schedule may start.
 
         A stop request ends the wait and lets ``_run_trials`` end the run with no
@@ -591,7 +383,7 @@ class Executor:
         if result.outcome is TriggerOutcome.TIMED_OUT:
             raise DeviceError(f"No {trigger.edge} edge on {line} within {timeout:g} s.")
 
-    def _run_trials(self, order: list[str], labjack: Any, worker: _MfcWorker) -> bool:
+    def _run_trials(self, order: list[str], labjack: Any, worker: MfcWorker) -> bool:
         origin = self._schedule_offset
         cumulative = 0.0
         for trial_index, name in enumerate(order):
@@ -633,7 +425,7 @@ class Executor:
             )
         return False
 
-    def _wait_until(self, deadline_seconds: float, worker: _MfcWorker) -> None:
+    def _wait_until(self, deadline_seconds: float, worker: MfcWorker) -> None:
         while True:
             if self._abort.is_set():
                 raise _Aborted
@@ -646,7 +438,7 @@ class Executor:
                 self._abort.wait(min(remaining - SPIN_SECONDS, 0.05))
 
     def _apply_step(
-        self, step: Step, labjack: Any, worker: _MfcWorker, context: dict[str, Any]
+        self, step: Step, labjack: Any, worker: MfcWorker, context: dict[str, Any]
     ) -> None:
         for name, value in step.setpoints.items():
             if self._last_setpoints.get(name) != value:
@@ -685,7 +477,7 @@ class Executor:
             )
 
     def _apply_final_state(
-        self, labjack: Any, worker: _MfcWorker, state: Step, event: str
+        self, labjack: Any, worker: MfcWorker, state: Step, event: str
     ) -> list[str]:
         """Apply a final state to every device. Return the problems that remain."""
         problems: list[str] = []
