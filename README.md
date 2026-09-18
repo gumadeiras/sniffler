@@ -151,8 +151,10 @@ port = "/dev/cu.usbserial-FIRST"
 
 [alicat."odor flow"]
 port = "/dev/cu.usbserial-SECOND"
-``` A recipe that names a valve or MFC that is not in `lab.toml` is
-refused before any hardware command.
+```
+
+A recipe that names a valve or MFC that is not in `lab.toml` is refused before
+any hardware command.
 
 To record TTL pulses from a recording system, and to start runs from its first
 pulse, name the input line in an optional `[trigger]` table. Use a spare line

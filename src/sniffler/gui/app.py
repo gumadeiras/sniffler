@@ -44,8 +44,6 @@ from sniffler.recipe import (
     RecipeError,
     RigMap,
     load_recipe,
-    resolve_trial_order,
-    resolved_duration_seconds,
     rig_map_from_settings,
     save_recipe,
 )
@@ -456,13 +454,14 @@ class MainWindow(QMainWindow):
         recipe = self.editor.recipe()
         problems = self.editor.problems()
         trials = ", ".join(f"{name} x{count}" for name, count in recipe.schedule.counts.items())
-        try:
-            planned = resolved_duration_seconds(
-                recipe, resolve_trial_order(recipe.schedule, recipe.schedule.seed or 0)
+        if problems:
+            duration = "duration unknown until the recipe is valid"
+        else:
+            planned = sum(
+                recipe.trial(name).duration_seconds * count
+                for name, count in recipe.schedule.counts.items()
             )
             duration = f"{planned:.1f} s planned"
-        except (RecipeError, KeyError):
-            duration = "duration unknown until the recipe is valid"
         name = recipe.name or "(no name)"
         self._recipe_summary.setText(f"{name}: {trials or 'no trials'}; {duration}")
         if not self.controller.is_running:
@@ -517,6 +516,7 @@ class MainWindow(QMainWindow):
     def _set_running(self, running: bool) -> None:
         self.start_button.setEnabled(not running and not self.editor.problems())
         self.trigger_box.setEnabled(not running)
+        self.rig_panel.read_limits.setEnabled(not running)  # the run holds the MFC ports
         self.start_now_button.setVisible(False)
         self.stop_button.setEnabled(running)
         self.abort_button.setEnabled(running)
@@ -578,10 +578,14 @@ class MainWindow(QMainWindow):
             if answer != QMessageBox.Yes:
                 event.ignore()
                 return
-            status = self.controller.abort_and_wait()
+            self.controller.abort_and_wait()  # a FAILED end reports through _on_finished
             self._tick.stop()
-            if status is not None and status.phase == Phase.FAILED:
-                self._tell(self, "Some valves or flows might still be on", status.message)
+            if self.controller.is_running:
+                self._tell(
+                    self,
+                    "Some valves or flows might still be on",
+                    "The run did not stop in time. Check every valve and flow on the rig.",
+                )
         if not self.offer_to_save():
             event.ignore()
             return

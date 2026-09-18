@@ -17,6 +17,7 @@ from sniffler.recipe import (
     Step,
     Trial,
     load_recipe,
+    order_problem,
     recipe_from_dict,
     recipe_problems,
     resolve_trial_order,
@@ -234,10 +235,27 @@ class OrderingTests(unittest.TestCase):
             self.assertNotEqual(order[1:], ["A", "A", "A"], f"seed {seed}")
 
     def test_raises_when_the_run_limit_cannot_be_met(self) -> None:
-        with self.assertRaisesRegex(RecipeError, "after 1000 attempts"):
+        with self.assertRaisesRegex(RecipeError, "end with more than 2 identical trials"):
             resolve_trial_order(Schedule({"A": 3}, "block-randomized"), 1)
         with self.assertRaisesRegex(RecipeError, "identical trials"):
             resolve_trial_order(Schedule({"A": 10, "B": 5}, "block-randomized"), 1)
+
+    def test_recipe_problems_reports_an_order_that_cannot_keep_the_run_limit(self) -> None:
+        # Two identical trials at the end are allowed; three are not, for either ordering.
+        self.assertIsNone(order_problem(Schedule({"A": 3, "B": 1}, "block-randomized")))
+        self.assertIsNone(order_problem(Schedule({"A": 2, "B": 2}, "as-listed")))
+        recipe = make_recipe()
+        for ordering in ("block-randomized", "as-listed"):
+            bad = Recipe(
+                recipe.name,
+                recipe.trials,
+                Schedule({"odor": 4, "blank": 1}, ordering),
+                recipe.shutdown,
+            )
+            problems = recipe_problems(bad, RIG)
+            self.assertEqual(len(problems), 1, problems)
+            self.assertIn("Schedule:", problems[0])
+            self.assertIn("identical trials in a row", problems[0])
 
     def test_as_listed_keeps_the_written_order(self) -> None:
         order = resolve_trial_order(Schedule({"A": 2, "B": 2}, "as-listed"), 99)

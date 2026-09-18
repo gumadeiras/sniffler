@@ -527,6 +527,7 @@ class RecipeEditor(QWidget):
             problem = f"The name {name!r} is already used."
         if problem is not None:
             self._problems.setText(problem)
+            self._problems.setVisible(True)  # _emit_changed hid it while the recipe was valid
             self._refresh_trial_list()
             return
         self._trials[index].name = name

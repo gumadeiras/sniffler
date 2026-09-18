@@ -123,6 +123,15 @@ class RunController(QObject):
         return self._executor.status
 
     def _drain(self) -> None:
+        # Statuses first: a mark's place on the schedule needs the trigger time, and
+        # the executor publishes that status before the first pulse event.
+        while True:
+            try:
+                status = self._statuses.get_nowait()
+            except queue.Empty:
+                break
+            self._last = status
+            self.status_changed.emit(status)
         for source, signal in (
             (self._samples, self.sample_received),
             (self._events, self.event_received),
@@ -133,14 +142,6 @@ class RunController(QObject):
                 except queue.Empty:
                     break
                 signal.emit(item)
-        status: Status | None = None
-        while True:
-            try:
-                status = self._statuses.get_nowait()
-            except queue.Empty:
-                break
-            self._last = status
-            self.status_changed.emit(status)
         if self._executor is not None and not self._executor.is_alive and self._timer.isActive():
             final = self._executor.status
             if final.phase.is_final:

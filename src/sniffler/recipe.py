@@ -294,16 +294,22 @@ def recipe_problems(recipe: Recipe, rig: RigMap) -> list[str]:
     if schedule.seed is not None and (isinstance(schedule.seed, bool) or schedule.seed < 0):
         problems.append("Schedule: the seed must be a whole number of zero or more.")
     trial_names = {trial.name for trial in recipe.trials}
+    counts_valid = True
     for name, count in schedule.counts.items():
         if name not in trial_names:
             problems.append(f"Schedule: unknown trial {name!r}.")
         if isinstance(count, bool) or not isinstance(count, int) or count < 0:
             problems.append(f"Schedule: the count for {name!r} must be a whole number.")
+            counts_valid = False
     if not any(
         isinstance(count, int) and not isinstance(count, bool) and count > 0
         for count in schedule.counts.values()
     ):
         problems.append("Schedule: at least one trial needs a count greater than zero.")
+    elif counts_valid and schedule.ordering in ORDERINGS:
+        problem = order_problem(schedule)
+        if problem is not None:
+            problems.append(f"Schedule: {problem}")
     return problems
 
 
@@ -335,6 +341,33 @@ def _blocks(counts: dict[str, int]) -> list[list[str]]:
     return blocks
 
 
+def order_problem(schedule: Schedule) -> str | None:
+    """Return why no trial order can keep the run limit, or None when one can.
+
+    Block randomized: blocks shrink as trial types run out, so only the last
+    blocks, which hold one trial type each, can force identical trials in a row.
+    """
+    blocks = _blocks(schedule.counts)
+    if schedule.ordering == "as-listed":
+        if _has_long_run([name for block in blocks for name in block]):
+            return (
+                f"The as-listed order puts more than {MAX_CONSECUTIVE_TRIALS} identical trials "
+                "in a row. Add another trial type or reduce the unequal counts."
+            )
+        return None
+    single = 0
+    for block in reversed(blocks):
+        if len(block) != 1:
+            break
+        single += 1
+    if single > MAX_CONSECUTIVE_TRIALS:
+        return (
+            f"The counts end with more than {MAX_CONSECUTIVE_TRIALS} identical trials in a row. "
+            "Add another trial type or make the counts more equal."
+        )
+    return None
+
+
 def resolve_trial_order(schedule: Schedule, seed: int) -> list[str]:
     """Return the trial names in run order.
 
@@ -343,17 +376,14 @@ def resolve_trial_order(schedule: Schedule, seed: int) -> list[str]:
     gives the same order. No more than MAX_CONSECUTIVE_TRIALS identical trials
     may follow each other anywhere in the sequence.
     """
+    if schedule.ordering not in ORDERINGS:
+        raise RecipeError(f"Unknown ordering {schedule.ordering!r}.")
+    problem = order_problem(schedule)
+    if problem is not None:
+        raise RecipeError(problem)
     blocks = _blocks(schedule.counts)
     if schedule.ordering == "as-listed":
-        sequence = [name for block in blocks for name in block]
-        if _has_long_run(sequence):
-            raise RecipeError(
-                f"The as-listed order puts more than {MAX_CONSECUTIVE_TRIALS} identical trials "
-                "in a row. Add another trial type or reduce the unequal counts."
-            )
-        return sequence
-    if schedule.ordering != "block-randomized":
-        raise RecipeError(f"Unknown ordering {schedule.ordering!r}.")
+        return [name for block in blocks for name in block]
 
     generator = random.Random(seed)
     for _attempt in range(ORDER_RETRY_CAP):

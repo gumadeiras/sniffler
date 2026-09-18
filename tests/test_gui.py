@@ -260,6 +260,7 @@ class EditingTests(GuiTestCase):
         self.assertEqual([trial.name for trial in editor.recipe().trials], ["odor", "control"])
         self.assertEqual(editor._trial_list.item(1).text(), "control")
         self.assertIn("already used", editor._problems.text())
+        self.assertFalse(editor._problems.isHidden(), "a valid recipe had hidden the label")
 
     def test_one_click_anywhere_in_a_valve_cell_toggles_it(self) -> None:
         from sniffler.gui.recipe_editor import RecipeEditor
@@ -579,6 +580,7 @@ class MainWindowTests(GuiTestCase):
         )
         self.assertTrue(window.controller.is_running)
         self.assertTrue(window.abort_button.isEnabled())
+        self.assertFalse(window.rig_panel.read_limits.isEnabled(), "the run holds the ports")
 
         window.close()
         self.process_events(0.1)
