@@ -30,6 +30,7 @@ class TimelineWidget(QWidget):
         self._segments: list[tuple[float, float, str, list[float]]] = []
         self._colors: dict[str, QColor] = {}
         self._lanes: dict[str, list[tuple[float, float]]] = {name: [] for name in self._valves}
+        self._labels: dict[str, str] = {}  # lane text by valve name; the name when absent
         self._total = 0.0
         self._cursor = 0.0
         self._current: int | None = None
@@ -50,6 +51,16 @@ class TimelineWidget(QWidget):
         self._lanes = {name: self._lanes.get(name, []) for name in names}
         self._fit()
         self.update()
+
+    def set_labels(self, labels: dict[str, str]) -> None:
+        """Show these texts on the lanes instead of the valve names."""
+        if labels == self._labels:
+            return
+        self._labels = dict(labels)
+        self.update()
+
+    def label(self, name: str) -> str:
+        return self._labels.get(name, name)
 
     def lanes(self) -> dict[str, list[tuple[float, float]]]:
         """Planned open intervals in run seconds for every rig valve; empty when never open."""
@@ -120,7 +131,7 @@ class TimelineWidget(QWidget):
         metrics = painter.fontMetrics()
         label_width = 0
         if self._lanes:
-            widest = max(metrics.horizontalAdvance(name) for name in self._lanes) + 4
+            widest = max(metrics.horizontalAdvance(self.label(name)) for name in self._lanes) + 4
             label_width = min(LABEL_MAX_PX, widest) + theme.GAP
         bar = QRectF(
             self.rect().left() + 1 + label_width, TOP_PAD, self.width() - 2 - label_width, BAR_PX
@@ -182,7 +193,7 @@ class TimelineWidget(QWidget):
                     )
                 )
             painter.setPen(QPen(QColor(theme.NAVY)))
-            text = metrics.elidedText(name, Qt.ElideRight, label_width - theme.GAP)
+            text = metrics.elidedText(self.label(name), Qt.ElideRight, label_width - theme.GAP)
             painter.drawText(
                 QRectF(self.rect().left() + 1, top, label_width - theme.GAP, LANE_PX),
                 Qt.AlignLeft | Qt.AlignVCenter,

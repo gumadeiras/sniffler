@@ -1,6 +1,7 @@
 """GUI tests under the offscreen Qt platform: authoring, validation, and window close."""
 
 import gc
+import json
 import os
 import tempfile
 import time
@@ -22,7 +23,7 @@ else:
 from sniffler.config import AlicatSettings, Settings, TriggerSettings
 from sniffler.executor import Phase
 from sniffler.fakes import FakeRig
-from sniffler.recipe import Recipe, Schedule, Step, Trial, rig_map_from_settings
+from sniffler.recipe import Recipe, RigMap, Schedule, Step, Trial, rig_map_from_settings
 from sniffler.runlog import LOCK_FILE_NAME, RunLock
 
 SETTINGS = Settings(
@@ -60,6 +61,7 @@ def make_recipe(step_seconds: float) -> Recipe:
             {"mfc-500": 50.0, "mfc-2000": 0.0},
         ),
         notes="carrier stays on",
+        valve_contents={"odor-1": "2-heptanone 1:1000"},
     )
 
 
@@ -122,6 +124,8 @@ class RecipeEditorTests(GuiTestCase):
         shutdown = editor._shutdown
         self.assertTrue(shutdown.setData(shutdown.index(0, 2), Qt.Checked, Qt.CheckStateRole))
         self.assertTrue(shutdown.setData(shutdown.index(0, 3), "50"))
+        editor._contents["odor-1"].setText("  2-heptanone 1:1000 ")
+        editor._contents["odor-2"].setText("   ")  # blank text is not recorded
 
         recipe = editor.recipe()
 
@@ -138,6 +142,12 @@ class RecipeEditorTests(GuiTestCase):
 
         self.assertEqual(editor.recipe(), make_recipe(0.25))
         self.assertEqual(editor.problems(), [])
+
+        # A rig change rebuilds the contents fields and keeps the text of valves that stay.
+        smaller = RigMap(RIG.labjack_serial, {"odor-1": 8, "final": 10}, RIG.mfcs, RIG.trigger)
+        editor.set_rig(smaller)
+        self.assertEqual(list(editor._contents), ["odor-1", "final"])
+        self.assertEqual(editor.recipe().valve_contents, {"odor-1": "2-heptanone 1:1000"})
 
     def test_marks_cells_that_break_lab_limits_and_blocks_the_run(self) -> None:
         from sniffler.gui.recipe_editor import RecipeEditor
@@ -373,6 +383,35 @@ class StatusPanelTests(GuiTestCase):
         panel.show_status(Status(Phase.FAILED, "usb gone"), 0.0)
         self.assertEqual(panel._message.text(), "usb gone")
 
+    def test_run_tab_shows_what_a_valve_holds_instead_of_its_name(self) -> None:
+        from sniffler.executor import Event, Status
+        from sniffler.gui.run_view import RunView
+
+        view = RunView(RIG, reduced_motion=True)
+        view.prepare(make_recipe(0.5))
+        panel = view.status_panel
+        status = Status(
+            Phase.RUNNING,
+            "Running.",
+            order=("odor", "blank"),
+            trial_index=0,
+            valves={"odor-1": True, "odor-2": False, "final": False},
+        )
+        panel.show_status(status, 0.0)
+        self.assertEqual(panel._valves.text(), "2-heptanone 1:1000 open; 2 closed")
+        self.assertIn("2-heptanone 1:1000 (odor-1) open", panel._valves.toolTip())
+        self.assertIn("final closed", panel._valves.toolTip())
+        self.assertTrue(panel._steps.item(0, 2).text().startswith("2-heptanone 1:1000 open"))
+        self.assertEqual(view.timeline.label("odor-1"), "2-heptanone 1:1000")
+        self.assertEqual(view.timeline.label("final"), "final", "no contents: the valve name")
+        self.assertEqual(list(view.timeline.lanes()), ["odor-1"], "lanes keep the valve names")
+
+        onset = Event("valve_command", 0.0, "", step_index=0, device="odor-1", value="open")
+        view.show_event(onset, 0.0)
+        self.assertEqual(panel.squirrel.cue_name, "2-heptanone 1:1000")
+        view.show_event(Event("valve_command", 0.5, "", device="odor-1", value="closed"), 0.5)
+        self.assertEqual(panel.squirrel.cue_name, "")
+
 
 class SniffCueTests(GuiTestCase):
     """The squirrel sniffs on each valve onset: driven by events, fast, and interruptible."""
@@ -585,8 +624,9 @@ class MainWindowTests(GuiTestCase):
         self.assertIn("SCCM", window.run_view.plot._cells["mfc-500"]["measured"].text())
         self.assertTrue(window.start_button.isEnabled())
         self.assertEqual(window.warnings, [])
-        manifest = (status.run_directory / "manifest.json").read_text()
-        self.assertIn("bench notes", manifest)
+        manifest = json.loads((status.run_directory / "manifest.json").read_text())
+        self.assertEqual(manifest["operator_notes"], "bench notes")
+        self.assertEqual(manifest["recipe"]["valve_contents"], {"odor-1": "2-heptanone 1:1000"})
 
     def test_sniff_cue_follows_each_valve_onset_within_one_gui_tick(self) -> None:
         window = self.window(reduced_motion=False)
@@ -631,7 +671,8 @@ class MainWindowTests(GuiTestCase):
         self.assertEqual(len(list(self.runs.iterdir())), 1)
 
     def test_keyboard_only_authoring_and_start(self) -> None:
-        """Tab order: name, notes, trials, trial tools, steps, step tools, shutdown, schedule."""
+        """Tab order: name, notes, valve contents, trials and tools, steps and tools, shutdown,
+        schedule."""
         from PySide6.QtTest import QTest
 
         window = self.window()
@@ -642,6 +683,10 @@ class MainWindowTests(GuiTestCase):
         QTest.keyClicks(editor._name, "Keyboard recipe")
         QTest.keyClick(window, Qt.Key_Tab)
         self.assertIs(QApplication.focusWidget(), editor._notes)
+        for name in RIG.valves:
+            QTest.keyClick(window, Qt.Key_Tab)
+            self.assertIs(QApplication.focusWidget(), editor._contents[name])
+        QTest.keyClicks(editor._contents["final"], "clean air")
         QTest.keyClick(window, Qt.Key_Tab)
         self.assertIs(QApplication.focusWidget(), editor._trial_list)
         QTest.keyClick(window, Qt.Key_Tab)

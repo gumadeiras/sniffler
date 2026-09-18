@@ -259,7 +259,9 @@ class OrderingTests(unittest.TestCase):
 
 class FileTests(unittest.TestCase):
     def test_round_trips_through_a_file(self) -> None:
-        recipe = make_recipe(notes="carrier at 100")
+        recipe = make_recipe(
+            notes="carrier at 100", valve_contents={"odor-1": "2-heptanone 1:1000 in oil"}
+        )
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory, "pulses.json")
@@ -269,10 +271,23 @@ class FileTests(unittest.TestCase):
 
         self.assertEqual(loaded, recipe)
         self.assertEqual(data["format"], "sniffler-recipe/1")
+        self.assertEqual(data["valve_contents"], {"odor-1": "2-heptanone 1:1000 in oil"})
         self.assertEqual(
             data["shutdown"],
             {"valves": {"odor-1": False, "odor-2": False}, "setpoints": {"mfc-500": 0.0}},
         )
+
+    def test_valve_contents_are_optional_in_the_file_and_checked_against_the_rig(self) -> None:
+        data = make_recipe().to_dict()
+        del data["valve_contents"]
+        self.assertEqual(recipe_from_dict(data).valve_contents, {})
+
+        data["valve_contents"] = {"odor-1": 3}
+        with self.assertRaisesRegex(RecipeError, "'valve_contents' must be a table"):
+            recipe_from_dict(data)
+
+        recipe = make_recipe(valve_contents={"odor-1": "hexanol", "odor-9": "octanol"})
+        self.assertEqual(recipe_problems(recipe, RIG), ["Valve contents: unknown valve 'odor-9'."])
 
     def test_reports_structural_problems_without_a_traceback(self) -> None:
         with self.assertRaisesRegex(RecipeError, "format"):

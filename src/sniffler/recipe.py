@@ -156,6 +156,8 @@ class Recipe:
     schedule: Schedule
     shutdown: Step
     notes: str = ""
+    # What each valve holds, by valve name, for the run record. Empty entries are left out.
+    valve_contents: dict[str, str] = field(default_factory=dict)
 
     def trial(self, name: str) -> Trial:
         for trial in self.trials:
@@ -163,11 +165,16 @@ class Recipe:
                 return trial
         raise KeyError(name)
 
+    def valve_label(self, name: str) -> str:
+        """What the valve holds when the recipe records it, else the valve name."""
+        return self.valve_contents.get(name) or name
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "format": RECIPE_FORMAT,
             "name": self.name,
             "notes": self.notes,
+            "valve_contents": dict(self.valve_contents),
             "trials": [
                 {"name": trial.name, "steps": [step.to_dict() for step in trial.steps]}
                 for trial in self.trials
@@ -277,6 +284,9 @@ def recipe_problems(recipe: Recipe, rig: RigMap) -> list[str]:
             problems.extend(_step_problems(step, rig, location, shutdown=False))
 
     problems.extend(_step_problems(recipe.shutdown, rig, "End state", shutdown=True))
+    for name in recipe.valve_contents:
+        if name not in rig.valves:
+            problems.append(f"Valve contents: unknown valve {name!r}.")
 
     schedule = recipe.schedule
     if schedule.ordering not in ORDERINGS:
@@ -397,6 +407,11 @@ def recipe_from_dict(data: Any) -> Recipe:
     notes = data.get("notes", "")
     if not isinstance(notes, str):
         raise RecipeError("Recipe: 'notes' must be text.")
+    valve_contents = data.get("valve_contents", {})
+    if not isinstance(valve_contents, dict) or not all(
+        isinstance(text, str) for text in valve_contents.values()
+    ):
+        raise RecipeError("Recipe: 'valve_contents' must be a table of valve name to text.")
 
     trials: list[Trial] = []
     for index, item in enumerate(_require(data, "trials", list, "Recipe"), start=1):
@@ -422,7 +437,12 @@ def recipe_from_dict(data: Any) -> Recipe:
     )
     shutdown = _step_from_dict(_require(data, "shutdown", dict, "Recipe"), "Shutdown", True)
     return Recipe(
-        name=name, trials=tuple(trials), schedule=schedule, shutdown=shutdown, notes=notes
+        name=name,
+        trials=tuple(trials),
+        schedule=schedule,
+        shutdown=shutdown,
+        notes=notes,
+        valve_contents={str(valve): text for valve, text in valve_contents.items()},
     )
 
 

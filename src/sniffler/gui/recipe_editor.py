@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -153,6 +154,12 @@ class RecipeEditor(QWidget):
         _strip_table_chrome(self._shutdown_view)
         self._shutdown_view.setAccessibleName("End state")
 
+        self._contents_box = _section("Valve contents")
+        self._contents_grid = QGridLayout(self._contents_box)
+        self._contents_grid.setHorizontalSpacing(theme.GAP)
+        self._contents_grid.setVerticalSpacing(theme.GAP)
+        self._contents: dict[str, QLineEdit] = {}
+
         self._problems = QLabel()
         self._problems.setWordWrap(True)
         self._problems.setStyleSheet(f"color: {theme.NAVY}; background: {theme.CREAM};")
@@ -160,6 +167,7 @@ class RecipeEditor(QWidget):
         self._problems.setAccessibleName("Recipe problems")
 
         self._build_layout()
+        self._build_contents_fields()
         self._connect()
         self.set_recipe(None)
 
@@ -229,12 +237,17 @@ class RecipeEditor(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(theme.MARGIN, theme.MARGIN, theme.MARGIN, theme.MARGIN)
         layout.setSpacing(theme.SECTION_GAP)
-        layout.addLayout(header)
+        top = QHBoxLayout()
+        top.setSpacing(theme.SECTION_GAP)
+        top.addLayout(header, stretch=1)
+        top.addWidget(self._contents_box, stretch=1)
+        layout.addLayout(top)
         layout.addWidget(splitter, stretch=1)
         layout.addWidget(self._problems)
 
-        # Keyboard order follows the work, not the columns: trials and their steps
-        # first, then the shutdown state, then the schedule.
+        # Keyboard order follows the work, not the columns: name, notes, and what each
+        # valve holds, then trials and their steps, then the shutdown state, then the
+        # schedule. The valve contents fields are chained in when they are built.
         order = (
             self._name,
             self._notes,
@@ -257,6 +270,37 @@ class RecipeEditor(QWidget):
         )
         for first, second in pairwise(order):
             QWidget.setTabOrder(first, second)
+
+    def _build_contents_fields(self) -> None:
+        """One text field per rig valve, in two columns so the header stays short.
+
+        Text is kept for valves that stay after a rig change.
+        """
+        kept = {name: field.text() for name, field in self._contents.items()}
+        while (item := self._contents_grid.takeAt(0)) is not None:
+            item.widget().deleteLater()
+        self._contents = {}
+        names = list(self._rig.valves)
+        rows = (len(names) + 1) // 2
+        previous: QWidget = self._notes
+        for position, name in enumerate(names):
+            field = QLineEdit(kept.get(name, ""))
+            field.setPlaceholderText("not recorded")
+            field.setToolTip("What this valve holds. Saved in the recipe and in every run record.")
+            field.setAccessibleName(f"Contents of {name}")
+            field.textChanged.connect(self._emit_changed)
+            row, column = position % rows, 2 * (position // rows)
+            self._contents_grid.addWidget(QLabel(name), row, column)
+            self._contents_grid.addWidget(field, row, column + 1)
+            self._contents_grid.setColumnStretch(column + 1, 1)
+            self._contents[name] = field
+            QWidget.setTabOrder(previous, field)
+            previous = field
+        QWidget.setTabOrder(previous, self._trial_list)
+
+    def _set_contents(self, contents: dict[str, str]) -> None:
+        for name, field in self._contents.items():
+            field.setText(contents.get(name, ""))
 
     def _connect(self) -> None:
         self._name.textChanged.connect(self._emit_changed)
@@ -292,6 +336,7 @@ class RecipeEditor(QWidget):
         self._rig = rig
         self._steps.set_rig(rig)
         self._shutdown.set_rig(rig)
+        self._build_contents_fields()
         self._emit_changed()
 
     # Recipe in and out -------------------------------------------------
@@ -309,6 +354,7 @@ class RecipeEditor(QWidget):
             self._ordering.setCurrentIndex(self._ordering.findData("block-randomized"))
             self._seed.setText("")
             self._shutdown.set_rows([self._shutdown.blank_row()])
+            self._set_contents({})
         else:
             self._name.setText(recipe.name)
             self._notes.setPlainText(recipe.notes)
@@ -326,6 +372,7 @@ class RecipeEditor(QWidget):
             seed = recipe.schedule.seed
             self._seed.setText("" if seed is None else str(seed))
             self._shutdown.set_rows([StepRow.from_step(recipe.shutdown)])
+            self._set_contents(recipe.valve_contents)
         self._refresh_trial_list()
         self._trial_list.setCurrentRow(0 if self._trials else -1)
         self._emit_changed()
@@ -355,6 +402,11 @@ class RecipeEditor(QWidget):
             schedule=schedule,
             shutdown=shutdown,
             notes=self._notes.toPlainText(),
+            valve_contents={
+                name: field.text().strip()
+                for name, field in self._contents.items()
+                if field.text().strip()
+            },
         )
 
     def problems(self) -> list[str]:

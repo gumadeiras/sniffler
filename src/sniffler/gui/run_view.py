@@ -401,6 +401,10 @@ class StatusPanel(QWidget):
         self._steps.setRowCount(0)
         self.squirrel.clear()
 
+    def _label(self, valve: str) -> str:
+        """What the valve holds, from the recipe, or the valve name."""
+        return valve if self._recipe is None else self._recipe.valve_label(valve)
+
     def show_status(self, status: Status, elapsed: float) -> None:
         self._phase.setText(status.phase.value)
         # "running" over "Running." says nothing twice; keep the line, drop the echo.
@@ -419,10 +423,15 @@ class StatusPanel(QWidget):
         else:
             self._trial.setText(f"{status.trial_index + 1} of {total}: {status.trial_name}")
         self._trial.setToolTip(self._trial.text())
-        self._valves.setText(_valves_text(status.valves))
+        self._valves.setText(
+            _valves_text({self._label(name): state for name, state in status.valves.items()})
+        )
         self._valves.setToolTip(
             ", ".join(
-                f"{name} {'open' if state else 'closed'}" for name, state in status.valves.items()
+                f"{self._label(name)} ({name}) {'open' if state else 'closed'}"
+                if self._label(name) != name
+                else f"{name} {'open' if state else 'closed'}"
+                for name, state in status.valves.items()
             )
         )
         self._form.setRowVisible(self._sync, status.sync_pulses is not None)
@@ -469,7 +478,7 @@ class StatusPanel(QWidget):
             self._steps.setRowCount(len(trial.steps))
             for row, step in enumerate(trial.steps):
                 state = ", ".join(
-                    [f"{valve} open" for valve, open_ in step.valves.items() if open_]
+                    [f"{self._label(valve)} open" for valve, open_ in step.valves.items() if open_]
                     + [f"{mfc} {value:g}" for mfc, value in step.setpoints.items()]
                 )
                 number = QTableWidgetItem(str(row + 1))
@@ -495,6 +504,7 @@ class RunView(QWidget):
         self.timeline = TimelineWidget()
         self.plot = MfcPlot(rig)
         self.cue_latencies: list[float] = []
+        self._labels: dict[str, str] = {}  # what each valve holds, for the squirrel
         self._plot_span = 0.0
         self._trigger_seconds = 0.0
         # The panel scrolls when a large rig needs more lines than the window has;
@@ -533,6 +543,8 @@ class RunView(QWidget):
             if is_open
         }
         self.timeline.set_valves(name for name in self._rig.valves if name in opened)
+        self._labels = {name: recipe.valve_label(name) for name in self._rig.valves}
+        self.timeline.set_labels(self._labels)
 
     def prepare(self, recipe: Recipe) -> None:
         self.status_panel.set_recipe(recipe)
@@ -558,7 +570,9 @@ class RunView(QWidget):
         self.timeline.set_progress(_schedule_seconds(status, elapsed), status.trial_index)
 
     def show_event(self, event: Event, elapsed: float) -> None:
-        """A valve that opens during a step makes the squirrel sniff; its name stays while open.
+        """A valve that opens during a step makes the squirrel sniff; its label stays while open.
+
+        The label is what the valve holds when the recipe records it, else the valve name.
 
         A sync pulse becomes a mark on the timeline, at its time on the trial schedule.
         """
@@ -568,13 +582,14 @@ class RunView(QWidget):
         if event.event != "valve_command":
             return
         squirrel = self.status_panel.squirrel
+        label = self._labels.get(event.device, event.device)
         if event.value != "open":
-            squirrel.close(event.device)
+            squirrel.close(label)
         elif event.step_index is None:
-            squirrel.show_open(event.device)  # the shutdown or safe state, not an odor onset
+            squirrel.show_open(label)  # the shutdown or safe state, not an odor onset
         else:
             self.cue_latencies.append(elapsed - event.returned_run_seconds)
-            squirrel.sniff([event.device])
+            squirrel.sniff([label])
 
     def tick(self, status: Status, elapsed: float) -> None:
         self.status_panel.show_time(status, elapsed)

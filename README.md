@@ -308,6 +308,14 @@ a problem exists.
 ordinary step rows, one for each pulse and one for each gap, and you can edit
 each row.
 
+*Valve contents* has one text field for each valve in `lab.toml`. Write what
+the valve holds, for example the odorant and its dilution. The text is saved
+in the recipe file and in the manifest of every run, so the analysis can name
+the stimulus behind each valve. The *Run* tab shows this text in place of the
+valve name: on the timeline lanes, beside the squirrel, in the *Valves* line,
+and in the step list. The tooltip of the *Valves* line keeps the valve name.
+An empty field is not recorded.
+
 Recipes are saved as `.json` files from the File menu. The file is a record,
 not an input format: build and edit recipes in the window. The window title
 shows the recipe file and marks unsaved changes; the program asks before it
@@ -411,9 +419,9 @@ the mark by the pulse width.
 Each run writes one directory under `runs`, named by the start time and the
 recipe name:
 
-- `manifest.json`: copies of the recipe and rig map, the seed, the resolved
-  trial order, the start time, the software version, the operator notes, and
-  the outcome.
+- `manifest.json`: copies of the recipe (with the valve contents) and rig map,
+  the seed, the resolved trial order, the start time, the software version,
+  the operator notes, and the outcome.
 - `events.csv`: every valve and MFC command, trial boundaries, stop and abort
   requests, errors, the counter enable and restore, the trigger wait and its
   end, every sync pulse, and the end state or the all-off state. The time columns are seconds since the run started, which is
