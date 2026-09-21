@@ -107,6 +107,7 @@ class RecipeEditor(QWidget):
         self._rig = rig
         self._trials: list[_TrialData] = []
         self._current: int | None = None
+        self._interleave_name: str | None = None
 
         self._name = QLineEdit()
         self._name.setAccessibleName("Recipe name")
@@ -137,6 +138,11 @@ class RecipeEditor(QWidget):
         self._schedule.setHorizontalHeaderLabels(["Trial", "Count"])
         self._schedule.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._schedule.verticalHeader().setVisible(False)
+        self._interleave = QComboBox()
+        self._interleave.setToolTip(
+            "A trial that runs after every other trial. The ordering does not place it, "
+            "and it has no count."
+        )
         self._ordering = QComboBox()
         for value in ORDERINGS:
             self._ordering.addItem(ORDERING_LABELS.get(value, value), value)
@@ -208,6 +214,7 @@ class RecipeEditor(QWidget):
         schedule_layout.setHorizontalSpacing(theme.SECTION_GAP)
         schedule_layout.setVerticalSpacing(theme.GAP)
         schedule_layout.addRow(self._schedule)
+        schedule_layout.addRow("Interleave", self._interleave)
         schedule_layout.addRow("Ordering", self._ordering)
         schedule_layout.addRow("Seed", self._seed)
 
@@ -265,6 +272,7 @@ class RecipeEditor(QWidget):
             self._pulse_train,
             self._shutdown_view,
             self._schedule,
+            self._interleave,
             self._ordering,
             self._seed,
         )
@@ -322,6 +330,7 @@ class RecipeEditor(QWidget):
         self._step_down.clicked.connect(lambda: self._on_move_step(1))
         self._pulse_train.clicked.connect(self._on_pulse_train)
         self._schedule.cellChanged.connect(self._on_count_changed)
+        self._interleave.currentIndexChanged.connect(self._on_interleave_changed)
         self._ordering.currentIndexChanged.connect(self._emit_changed)
         self._seed.textChanged.connect(self._emit_changed)
         self._shutdown.dataChanged.connect(self._emit_changed)
@@ -351,6 +360,7 @@ class RecipeEditor(QWidget):
             self._name.setText("")
             self._notes.setPlainText("")
             self._trials = [_TrialData("trial 1", [self._steps.blank_row()], 1)]
+            self._interleave_name = None
             self._ordering.setCurrentIndex(self._ordering.findData("block-randomized"))
             self._seed.setText("")
             self._shutdown.set_rows([self._shutdown.blank_row()])
@@ -366,6 +376,7 @@ class RecipeEditor(QWidget):
                 )
                 for trial in recipe.trials
             ]
+            self._set_interleave(recipe.schedule.interleave)
             self._ordering.setCurrentIndex(
                 max(0, self._ordering.findData(recipe.schedule.ordering))
             )
@@ -393,6 +404,7 @@ class RecipeEditor(QWidget):
             counts={trial.name: trial.count for trial in self._trials},
             ordering=self._ordering.currentData(),
             seed=seed,
+            interleave=self._interleave_name,
         )
         shutdown_rows = self._shutdown.steps()
         shutdown = shutdown_rows[0] if shutdown_rows else Step(None)
@@ -435,14 +447,30 @@ class RecipeEditor(QWidget):
         with QSignalBlocker(self._schedule):
             self._schedule.setRowCount(len(self._trials))
             for row, trial in enumerate(self._trials):
+                interleave = trial.name == self._interleave_name
                 name = QTableWidgetItem(trial.name)
-                name.setFlags(Qt.ItemIsEnabled)
+                # The interleave row is disabled as a whole, so the name fades like its count.
+                name.setFlags(Qt.NoItemFlags if interleave else Qt.ItemIsEnabled)
                 self._schedule.setItem(row, 0, name)
                 spin = QSpinBox()
                 spin.setRange(0, 100000)
                 spin.setValue(trial.count)
+                if interleave:
+                    name.setToolTip("Runs after every other trial.")
+                    spin.setEnabled(False)
+                    spin.setToolTip("Runs after every other trial.")
                 spin.valueChanged.connect(lambda value, index=row: self._set_count(index, value))
                 self._schedule.setCellWidget(row, 1, spin)
+        with QSignalBlocker(self._interleave):
+            self._interleave.clear()
+            self._interleave.addItem("none", None)
+            for trial in self._trials:
+                self._interleave.addItem(trial.name, trial.name)
+            names = [trial.name for trial in self._trials]
+            current = (
+                names.index(self._interleave_name) + 1 if self._interleave_name in names else 0
+            )
+            self._interleave.setCurrentIndex(current)
 
     def _set_count(self, index: int, value: int) -> None:
         if 0 <= index < len(self._trials):
@@ -450,6 +478,18 @@ class RecipeEditor(QWidget):
             self._emit_changed()
 
     def _on_count_changed(self, _row: int, _column: int) -> None:
+        self._emit_changed()
+
+    def _set_interleave(self, name: str | None) -> None:
+        """Make one trial the interleave, or none. The interleave has no count of its own."""
+        self._interleave_name = name
+        for trial in self._trials:
+            if trial.name == name:
+                trial.count = 0
+
+    def _on_interleave_changed(self, _index: int) -> None:
+        self._set_interleave(self._interleave.currentData())
+        self._refresh_schedule()
         self._emit_changed()
 
     def _select_trial(self, index: int) -> None:
@@ -499,6 +539,8 @@ class RecipeEditor(QWidget):
         if answer != QMessageBox.Yes:
             return
         self._current = None
+        if trial.name == self._interleave_name:
+            self._interleave_name = None
         del self._trials[index]
         self._refresh_trial_list()
         self._trial_list.setCurrentRow(min(index, len(self._trials) - 1))
@@ -530,6 +572,8 @@ class RecipeEditor(QWidget):
             self._problems.setVisible(True)  # _emit_changed hid it while the recipe was valid
             self._refresh_trial_list()
             return
+        if self._trials[index].name == self._interleave_name:
+            self._interleave_name = name
         self._trials[index].name = name
         self._refresh_trial_list()
         self._emit_changed()

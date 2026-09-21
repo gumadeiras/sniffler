@@ -305,7 +305,8 @@ A recipe has three levels and one primitive:
   valve to open or closed and gives every MFC a target flow. At any moment one
   step describes the rig.
 - **Trial**: a named, ordered list of steps.
-- **Schedule**: a count for each trial and the ordering policy.
+- **Schedule**: a count for each trial, the ordering policy, and an optional
+  interleave trial.
 - **End state**: one step with no duration. The executor applies it after
   the last trial or after *Stop after this trial*.
 
@@ -343,6 +344,16 @@ trial of each type, so a run that stops early is still balanced. No more than
 two identical trials follow each other anywhere in the run. The seed that
 produced the order is saved with the run in `manifest.json`. Set the seed in the recipe
 to repeat the same order, or leave it empty for a new seed for each run.
+
+*Interleave* names one trial that runs after every other trial, for example a
+blank between odors. The ordering does not place it and it has no count: its
+count in the schedule table is disabled, and it runs as many times as the other
+trials together. The run ends with the interleave, then the end state. Because
+the interleave separates every pair of trials, the two-in-a-row limit is always
+met, so a schedule with one odor trial and an interleave is allowed. The
+resolved order in `manifest.json` lists the interleave as a normal trial, and
+*Stop after this trial* can end the run before the interleave that follows the
+current trial.
 
 *Read device limits* in the *Config* tab reads the maximum of each MFC.
 This command changes no output.

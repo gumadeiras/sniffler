@@ -191,6 +191,29 @@ class ValidationTests(unittest.TestCase):
         self.assertIn("Schedule: unknown trial 'ghost'.", problems)
         self.assertIn("Schedule: the seed must be a whole number of zero or more.", problems)
 
+    def test_refuses_an_interleave_with_a_count_or_an_unknown_name(self) -> None:
+        counted = make_recipe(schedule=Schedule({"odor": 3, "blank": 1}, interleave="blank"))
+        self.assertEqual(
+            recipe_problems(counted, RIG),
+            [
+                (
+                    "Schedule: the interleave trial 'blank' cannot also have a count. "
+                    "It runs after every other trial."
+                )
+            ],
+        )
+
+        unknown = make_recipe(schedule=Schedule({"odor": 3, "blank": 0}, interleave="ghost"))
+        self.assertEqual(
+            recipe_problems(unknown, RIG), ["Schedule: unknown interleave trial 'ghost'."]
+        )
+
+        alone = make_recipe(schedule=Schedule({"odor": 0, "blank": 0}, interleave="blank"))
+        self.assertIn(
+            "Schedule: at least one trial needs a count greater than zero.",
+            recipe_problems(alone, RIG),
+        )
+
     def test_refuses_duplicate_and_empty_trial_names(self) -> None:
         recipe = make_recipe(
             trials=(
@@ -287,6 +310,28 @@ class OrderingTests(unittest.TestCase):
 
         self.assertEqual(order, ["A", "C", "A", "C"])
 
+    def test_interleave_follows_every_placed_trial(self) -> None:
+        listed = Schedule({"A": 2, "B": 2, "wash": 0}, "as-listed", interleave="wash")
+        self.assertEqual(
+            resolve_trial_order(listed, 0),
+            ["A", "wash", "B", "wash", "A", "wash", "B", "wash"],
+        )
+
+        shuffled = Schedule({"A": 20, "B": 20, "wash": 0}, "block-randomized", interleave="wash")
+        order = resolve_trial_order(shuffled, 12345)
+        self.assertEqual(order[1::2], ["wash"] * 40)
+        self.assertEqual(Counter(order[0::2]), Counter({"A": 20, "B": 20}))
+        self.assertEqual(order, resolve_trial_order(shuffled, 12345))
+        self.assertNotEqual(order[0::2], ["A", "B"] * 20)
+        self.assertEqual(shuffled.run_counts(), {"A": 20, "B": 20, "wash": 40})
+
+    def test_interleave_permits_one_placed_trial(self) -> None:
+        # The interleave separates every pair, so the run limit is met with any counts.
+        for ordering in ("block-randomized", "as-listed"):
+            schedule = Schedule({"A": 3}, ordering, interleave="wash")
+            self.assertIsNone(order_problem(schedule))
+            self.assertEqual(resolve_trial_order(schedule, 1), ["A", "wash"] * 3)
+
     def test_computes_the_resolved_duration(self) -> None:
         recipe = make_recipe()
 
@@ -312,6 +357,19 @@ class FileTests(unittest.TestCase):
             data["shutdown"],
             {"valves": {"odor-1": False, "odor-2": False}, "setpoints": {"mfc-500": 0.0}},
         )
+
+    def test_interleave_is_optional_in_the_file(self) -> None:
+        recipe = make_recipe(schedule=Schedule({"odor": 3, "blank": 0}, "as-listed", 7, "blank"))
+        data = recipe.to_dict()
+        self.assertEqual(data["schedule"]["interleave"], "blank")
+        self.assertEqual(recipe_from_dict(data), recipe)
+
+        del data["schedule"]["interleave"]
+        self.assertIsNone(recipe_from_dict(data).schedule.interleave)
+
+        data["schedule"]["interleave"] = 3
+        with self.assertRaisesRegex(RecipeError, "'interleave' must be a trial name"):
+            recipe_from_dict(data)
 
     def test_valve_contents_are_optional_in_the_file_and_checked_against_the_rig(self) -> None:
         data = make_recipe().to_dict()

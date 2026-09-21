@@ -66,6 +66,19 @@ def make_recipe(step_seconds: float) -> Recipe:
     )
 
 
+def interleaved_recipe(step_seconds: float) -> Recipe:
+    """The GUI recipe with the blank as the interleave: it runs after every odor trial."""
+    recipe = make_recipe(step_seconds)
+    return Recipe(
+        recipe.name,
+        recipe.trials,
+        Schedule({"odor": 2, "blank": 0}, "block-randomized", 11, interleave="blank"),
+        recipe.shutdown,
+        recipe.notes,
+        recipe.valve_contents,
+    )
+
+
 @unittest.skipIf(QApplication is None, f"PySide6 is not usable here: {IMPORT_ERROR}")
 class GuiTestCase(unittest.TestCase):
     application: "QApplication"
@@ -262,6 +275,49 @@ class EditingTests(GuiTestCase):
         self.assertEqual(editor._trial_list.item(1).text(), "control")
         self.assertIn("already used", editor._problems.text())
         self.assertFalse(editor._problems.isHidden(), "a valid recipe had hidden the label")
+
+    def test_interleave_lists_the_trials_and_takes_over_the_count(self) -> None:
+        from sniffler.gui.recipe_editor import RecipeEditor
+
+        editor = RecipeEditor(RIG)
+        editor.set_recipe(make_recipe(0.5))
+        combo = editor._interleave
+        self.assertEqual(
+            [combo.itemText(i) for i in range(combo.count())], ["none", "odor", "blank"]
+        )
+
+        combo.setCurrentIndex(2)
+        self.assertEqual(
+            editor.recipe().schedule,
+            Schedule({"odor": 2, "blank": 0}, "block-randomized", 11, "blank"),
+        )
+        self.assertFalse(editor._schedule.cellWidget(1, 1).isEnabled())
+        self.assertFalse(editor._schedule.item(1, 0).flags() & Qt.ItemIsEnabled)
+        self.assertTrue(editor._schedule.item(0, 0).flags() & Qt.ItemIsEnabled)
+        self.assertTrue(editor._schedule.cellWidget(0, 1).isEnabled())
+        self.assertEqual(editor.problems(), [])
+
+        editor._trial_list.item(1).setText("wash")
+        self.assertEqual(editor.recipe().schedule.interleave, "wash")
+        self.assertEqual(editor._interleave.currentText(), "wash")
+
+        editor._confirm = lambda *_arguments: QMessageBox.Yes
+        editor._trial_list.setCurrentRow(1)
+        editor._on_remove_trial()
+        self.assertIsNone(editor.recipe().schedule.interleave)
+        self.assertEqual(editor._interleave.currentText(), "none")
+
+    def test_loads_a_recipe_with_an_interleave(self) -> None:
+        from sniffler.gui.recipe_editor import RecipeEditor
+
+        recipe = interleaved_recipe(0.5)
+        editor = RecipeEditor(RIG)
+        editor.set_recipe(recipe)
+
+        self.assertEqual(editor.recipe(), recipe)
+        self.assertEqual(editor._interleave.currentText(), "blank")
+        self.assertFalse(editor._schedule.cellWidget(1, 1).isEnabled())
+        self.assertFalse(editor._schedule.item(1, 0).flags() & Qt.ItemIsEnabled)
 
     def test_one_click_anywhere_in_a_valve_cell_toggles_it(self) -> None:
         from sniffler.gui.recipe_editor import RecipeEditor
@@ -927,6 +983,15 @@ class MainWindowTests(GuiTestCase):
         self.assertEqual(self.rig.labjack_opens, 0)
         self.assertEqual(self.rig.alicats["mfc-500"].setpoints, [])
         self.assertTrue(window.shutdown_button.isEnabled())
+
+    def test_summary_counts_the_interleave_once_per_placed_trial(self) -> None:
+        window = self.window()
+
+        window.editor.set_recipe(interleaved_recipe(0.5))
+
+        self.assertIn(
+            "odor x2, blank x2 (interleave); 3.0 s planned", window._recipe_summary.text()
+        )
 
     def test_start_is_refused_while_the_recipe_has_problems(self) -> None:
         window = self.window()

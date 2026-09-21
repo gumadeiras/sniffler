@@ -178,6 +178,25 @@ class ExitPathTests(ExecutorTestCase):
             {Phase.RUNNING, Phase.DONE},
         )
 
+    def test_interleave_runs_after_every_placed_trial(self) -> None:
+        base = make_recipe()
+        recipe = Recipe(
+            base.name,
+            base.trials,
+            Schedule({"odor": 2, "blank": 0}, "block-randomized", 3, interleave="blank"),
+            base.shutdown,
+        )
+
+        status = self.executor(recipe).run()
+
+        self.assertEqual(status.phase, Phase.DONE, status.message)
+        self.assertIn("4 trials ran", status.message)
+        manifest = self.manifest(status)
+        self.assertEqual(manifest["resolved_trial_order"], ["odor", "blank", "odor", "blank"])
+        self.assertEqual(manifest["recipe"]["schedule"]["interleave"], "blank")
+        starts = [e["trial_name"] for e in self.events(status) if e["event"] == "trial_start"]
+        self.assertEqual(starts, ["odor", "blank", "odor", "blank"])
+
     def test_stop_finishes_the_current_trial_then_applies_the_shutdown_state(self) -> None:
         executor = self.executor(make_recipe(step_seconds=0.1, counts={"odor": 3, "blank": 3}))
         executor.start()

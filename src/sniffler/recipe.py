@@ -154,11 +154,27 @@ class Trial:
 
 @dataclass(frozen=True)
 class Schedule:
-    """Trial counts and the ordering policy."""
+    """Trial counts, the ordering policy, and the optional interleave.
+
+    The interleave is a trial that runs after every trial the counts place. The
+    ordering policy does not place it, and it has no count of its own.
+    """
 
     counts: dict[str, int]
     ordering: str = "block-randomized"
     seed: int | None = None
+    interleave: str | None = None
+
+    def main_counts(self) -> dict[str, int]:
+        """The counts that the ordering policy places; the interleave is not one of them."""
+        return {name: count for name, count in self.counts.items() if name != self.interleave}
+
+    def run_counts(self) -> dict[str, int]:
+        """How many times each trial runs, the interleave included."""
+        counts = self.main_counts()
+        if self.interleave is not None:
+            counts[self.interleave] = sum(counts.values())
+        return counts
 
 
 @dataclass(frozen=True)
@@ -197,6 +213,7 @@ class Recipe:
                 "ordering": self.schedule.ordering,
                 "counts": dict(self.schedule.counts),
                 "seed": self.schedule.seed,
+                "interleave": self.schedule.interleave,
             },
             "shutdown": {
                 "valves": dict(self.shutdown.valves),
@@ -348,9 +365,18 @@ def recipe_problems(recipe: Recipe, rig: RigMap) -> list[str]:
         if isinstance(count, bool) or not isinstance(count, int) or count < 0:
             problems.append(f"Schedule: the count for {name!r} must be a whole number.")
             counts_valid = False
+    interleave = schedule.interleave
+    if interleave is not None:
+        if interleave not in trial_names:
+            problems.append(f"Schedule: unknown interleave trial {interleave!r}.")
+        if schedule.counts.get(interleave, 0) != 0:
+            problems.append(
+                f"Schedule: the interleave trial {interleave!r} cannot also have a count. "
+                "It runs after every other trial."
+            )
     if not any(
         isinstance(count, int) and not isinstance(count, bool) and count > 0
-        for count in schedule.counts.values()
+        for count in schedule.main_counts().values()
     ):
         problems.append("Schedule: at least one trial needs a count greater than zero.")
     elif counts_valid and schedule.ordering in ORDERINGS:
@@ -388,13 +414,23 @@ def _blocks(counts: dict[str, int]) -> list[list[str]]:
     return blocks
 
 
+def _weave(main: list[str], interleave: str | None) -> list[str]:
+    """Place the interleave after every trial of the main order."""
+    if interleave is None:
+        return main
+    return [name for trial in main for name in (trial, interleave)]
+
+
 def order_problem(schedule: Schedule) -> str | None:
     """Return why no trial order can keep the run limit, or None when one can.
 
+    An interleave separates every pair of trials, so the limit is always kept.
     Block randomized: blocks shrink as trial types run out, so only the last
     blocks, which hold one trial type each, can force identical trials in a row.
     """
-    blocks = _blocks(schedule.counts)
+    if schedule.interleave is not None:
+        return None
+    blocks = _blocks(schedule.main_counts())
     if schedule.ordering == "as-listed":
         if _has_long_run([name for block in blocks for name in block]):
             return (
@@ -421,16 +457,17 @@ def resolve_trial_order(schedule: Schedule, seed: int) -> list[str]:
     Block randomized: each block holds one trial of each type that still has a
     count, and the order inside each block is shuffled. The same seed always
     gives the same order. No more than MAX_CONSECUTIVE_TRIALS identical trials
-    may follow each other anywhere in the sequence.
+    may follow each other anywhere in the sequence. The interleave, when set,
+    follows every placed trial.
     """
     if schedule.ordering not in ORDERINGS:
         raise RecipeError(f"Unknown ordering {schedule.ordering!r}.")
     problem = order_problem(schedule)
     if problem is not None:
         raise RecipeError(problem)
-    blocks = _blocks(schedule.counts)
+    blocks = _blocks(schedule.main_counts())
     if schedule.ordering == "as-listed":
-        return [name for block in blocks for name in block]
+        return _weave([name for block in blocks for name in block], schedule.interleave)
 
     generator = random.Random(seed)
     for _attempt in range(ORDER_RETRY_CAP):
@@ -439,6 +476,7 @@ def resolve_trial_order(schedule: Schedule, seed: int) -> list[str]:
             shuffled = list(block)
             generator.shuffle(shuffled)
             sequence.extend(shuffled)
+        sequence = _weave(sequence, schedule.interleave)
         if not _has_long_run(sequence):
             return sequence
     raise RecipeError(
@@ -507,10 +545,14 @@ def recipe_from_dict(data: Any) -> Recipe:
     seed = schedule_data.get("seed")
     if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
         raise RecipeError("Schedule: 'seed' must be a whole number or empty.")
+    interleave = schedule_data.get("interleave")
+    if interleave is not None and not isinstance(interleave, str):
+        raise RecipeError("Schedule: 'interleave' must be a trial name or empty.")
     schedule = Schedule(
         counts={str(trial_name): count for trial_name, count in counts.items()},
         ordering=_require(schedule_data, "ordering", str, "Schedule"),
         seed=seed,
+        interleave=interleave,
     )
     shutdown = _step_from_dict(_require(data, "shutdown", dict, "Recipe"), "Shutdown", True)
     return Recipe(

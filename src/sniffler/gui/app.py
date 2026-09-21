@@ -448,13 +448,16 @@ class MainWindow(QMainWindow):
     def _refresh_summary(self) -> None:
         recipe = self.editor.recipe()
         problems = self.editor.problems()
-        trials = ", ".join(f"{name} x{count}" for name, count in recipe.schedule.counts.items())
+        counts = recipe.schedule.run_counts()
+        trials = ", ".join(
+            f"{name} x{count}{' (interleave)' if name == recipe.schedule.interleave else ''}"
+            for name, count in counts.items()
+        )
         if problems:
             duration = "duration unknown until the recipe is valid"
         else:
             planned = sum(
-                recipe.trial(name).duration_seconds * count
-                for name, count in recipe.schedule.counts.items()
+                recipe.trial(name).duration_seconds * count for name, count in counts.items()
             )
             duration = f"{planned:.1f} s planned"
         name = recipe.name or "(no name)"
