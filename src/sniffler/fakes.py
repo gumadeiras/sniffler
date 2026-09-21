@@ -16,6 +16,9 @@ from sniffler.hardware import DeviceError
 DEFAULT_MFCS = ("mfc-500", "mfc-2000")
 LAG_FRACTION = 0.35
 NOISE_FRACTION = 0.004
+ROOM_TEMPERATURE_C = 23.0
+# Volumetric flow at room temperature and 14.7 psia is a little above the standard mass flow.
+VOLUMETRIC_RATIO = 1.02
 
 
 @dataclass(frozen=True)
@@ -166,9 +169,18 @@ class FakeAlicat:
             self._flow += (setpoint - self._flow) * LAG_FRACTION
             noise = self._random.gauss(0.0, NOISE_FRACTION * self.full_scale)
             mass_flow = round(max(0.0, self._flow + noise), 2)
+            temperature = round(ROOM_TEMPERATURE_C + self._random.gauss(0.0, 0.05), 2)
         else:
             mass_flow = setpoint * 0.98
-        return {"setpoint": setpoint, "mass_flow": mass_flow, "pressure": 14.7}
+            temperature = ROOM_TEMPERATURE_C
+        # The same keys as the Alicat driver's reading, less the gas name.
+        return {
+            "setpoint": setpoint,
+            "mass_flow": mass_flow,
+            "volumetric_flow": round(mass_flow * VOLUMETRIC_RATIO, 2),
+            "pressure": 14.7,
+            "temperature": temperature,
+        }
 
 
 class FakeRig:

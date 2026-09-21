@@ -175,7 +175,8 @@ class ExitPathTests(ExecutorTestCase):
         samples = {mfc: self.series(status, "mfc", mfc) for mfc in ("mfc-500", "mfc-2000")}
         for rows in samples.values():
             self.assertGreater(len(rows), 1)
-            self.assertTrue(all(row["mass_flow"] for row in rows))
+            for column in ("device_setpoint", "mass_flow", "pressure", "temperature"):
+                self.assertTrue(all(row[column] for row in rows), f"{column} is filled")
         self.assertEqual(len(self.samples), sum(len(rows) for rows in samples.values()))
         for valve in ("odor-1", "odor-2", "final"):
             rows = self.series(status, "valve", valve)
