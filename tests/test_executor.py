@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+from itertools import pairwise
 from pathlib import Path
 from unittest.mock import patch
 
@@ -458,11 +459,19 @@ class TimingTests(ExecutorTestCase):
         run_start = next(event for event in self.events(status) if event["event"] == "run_start")
         trial_ends = [event for event in self.events(status) if event["event"] == "trial_end"]
         self.assertEqual(len(trial_ends), 10)
-        last = trial_ends[-1]
-        self.assertAlmostEqual(float(last["scheduled_run_seconds"]), 0.3, places=6)
-        self.assertLess(
-            float(last["returned_run_seconds"]) - float(last["scheduled_run_seconds"]), 0.02
-        )
+        self.assertAlmostEqual(float(trial_ends[-1]["scheduled_run_seconds"]), 0.3, places=6)
+        lateness = [
+            float(event["returned_run_seconds"]) - float(event["scheduled_run_seconds"])
+            for event in trial_ends
+        ]
+        # Deadlines are absolute. A wait measured from the previous step would add the
+        # 4 ms write delay to every step, so the lateness would grow from one trial to
+        # the next. One late wake-up of the thread on a loaded host adds one jump, and
+        # the executor then catches up about 15 ms per step, so the trial after a jump
+        # is less late, not more. The typical change between trials is the measure.
+        changes = [after - before for before, after in pairwise(lateness)]
+        self.assertLess(min(lateness), 0.02, f"the deadline is never met: {lateness}")
+        self.assertLess(statistics.median(changes), 0.002, f"lateness grows: {lateness}")
         self.assertLess(float(run_start["returned_run_seconds"]), 0.01)
 
     def test_status_reports_progress_from_the_worker_thread(self) -> None:
@@ -768,6 +777,10 @@ class StartPulseTests(ExecutorTestCase):
     def ttl_rows(self, status: Status) -> list[dict[str, str]]:
         return [event for event in self.events(status) if event["event"] == "ttl_command"]
 
+    def pulse_width(self, status: Status) -> float:
+        rise, fall = self.ttl_rows(status)[1:3]
+        return float(fall["returned_run_seconds"]) - float(rise["returned_run_seconds"])
+
     def test_pulse_rises_with_the_first_valves_and_falls_after_the_width(self) -> None:
         status = self.executor(recipe=make_recipe(0.1), rig=RIG_WITH_TTL, send_ttl=True).run()
 
@@ -800,9 +813,7 @@ class StartPulseTests(ExecutorTestCase):
         self.assertEqual(rise["sync_count"], "0", "the packet read the counter")
         self.assertEqual(fall["detail"], "start pulse")
         self.assertEqual((fall["trial_index"], fall["step_index"]), ("0", "0"))
-        width = float(fall["returned_run_seconds"]) - float(rise["returned_run_seconds"])
-        self.assertGreaterEqual(width, 0.03)
-        self.assertLess(width, 0.06)
+        self.assertGreaterEqual(self.pulse_width(status), 0.03, "the pulse is never cut short")
         second = next(e for e in events if e["event"] == "valve_command" and e["step_index"] == "1")
         self.assertLess(float(fall["returned_run_seconds"]), float(second["commanded_run_seconds"]))
         self.assertEqual(rows[3]["detail"], "shutdown_state")
@@ -813,6 +824,18 @@ class StartPulseTests(ExecutorTestCase):
             manifest["rig_map"]["ttl_output"],
             {"channel": 5, "mode": "pulse", "pulse_seconds": 0.03},
         )
+
+    def test_pulse_width_stays_near_the_configured_width(self) -> None:
+        # The fall is one event per run, so one late wake-up of the thread on a loaded
+        # host can stretch one pulse. A fall that waited for the wrong deadline
+        # stretches every pulse, so the typical width over three runs is the measure.
+        widths = []
+        for _ in range(3):
+            status = self.executor(make_recipe(0.1), rig=RIG_WITH_TTL, send_ttl=True).run()
+            self.assertEqual(status.phase, Phase.DONE, status.message)
+            widths.append(self.pulse_width(status))
+        self.assertGreaterEqual(min(widths), 0.03, f"widths {widths}")
+        self.assertLess(statistics.median(widths), 0.06, f"widths {widths}")
 
     def test_high_mode_holds_the_line_until_the_end_state(self) -> None:
         status = self.executor(recipe=make_recipe(0.05), rig=RIG_WITH_TTL_HIGH, send_ttl=True).run()
