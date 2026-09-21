@@ -396,6 +396,16 @@ The same all-off state is applied when a device command fails and when the
 window closes during a run. It is not configurable. The run log calls it
 `safe_state` and the end state `shutdown_state`.
 
+*Shut down the rig*, at the right end of the tab bar, applies the same
+all-off state when no run is active: for example after a run whose end state
+kept a carrier flow on, or before you leave the rig. It opens the LabJack and
+each MFC, closes all valves, sets every setpoint to zero, and closes the
+devices again. It is not a run, so nothing is logged, and *Start run* waits
+until it has ended. The MFC checks are the same as for a run: the control
+point must be `mass flow` and the setpoint source `U`. A device that does not
+answer is named in a message that says whether its output might have changed.
+During a run the button is off; use *Abort now*.
+
 ### Sync pulses and the TTL start
 
 When `lab.toml` has a `[trigger]` table, every run counts the pulses on that

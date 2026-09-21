@@ -9,7 +9,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QSettings, QSize, QTimer
+from PySide6.QtCore import QSettings, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QStyle,
     QTabWidget,
     QToolBar,
     QVBoxLayout,
@@ -30,7 +31,7 @@ from PySide6.QtWidgets import (
 
 from sniffler import hardware
 from sniffler.config import ConfigError, Settings, load_settings
-from sniffler.executor import Event, Phase, Sample, Status
+from sniffler.executor import Event, Phase, Sample, Status, apply_safe_state
 from sniffler.gui import theme
 from sniffler.gui.icons import icon
 from sniffler.gui.recipe_editor import RecipeEditor
@@ -77,6 +78,7 @@ class MainWindow(QMainWindow):
         self._store = store if store is not None else QSettings("sniffler", "sniffler-gui")
         self._recipe_path: Path | None = None
         self._running_recipe: Recipe | None = None
+        self._shutting_down = False
         self._dirty = False
         self._ask = QMessageBox.question
         self._tell = QMessageBox.warning
@@ -137,6 +139,11 @@ class MainWindow(QMainWindow):
         self.start_now_button.setObjectName("consequential")
         self.start_now_button.setToolTip("End the wait for the trigger and start the trials now.")
         self.start_now_button.hide()
+        self.shutdown_button = QPushButton("Shut down the rig")
+        self.shutdown_button.setObjectName("tabCorner")
+        self.shutdown_button.setToolTip(
+            "Close all valves and set every flow to zero. During a run, use Abort now."
+        )
 
         self._build_layout()
         self._build_menu()
@@ -191,6 +198,16 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.editor, "Recipe")
         self.tabs.addTab(run_tab, "Run")
         self.tabs.addTab(self.rig_panel, "Config")
+        # The rig control shares the tab bar row: no row of its own, in reach from every tab.
+        # A corner widget is clamped to the bar's height, so the button has its own compact
+        # style. The style draws the tab base line above the bar's bottom edge; the margin
+        # lifts the button so that its frame ends on that line.
+        corner = QWidget()
+        corner_layout = QHBoxLayout(corner)
+        overlap = self.style().pixelMetric(QStyle.PM_TabBarBaseOverlap, None, self.tabs.tabBar())
+        corner_layout.setContentsMargins(0, 0, 0, overlap)
+        corner_layout.addWidget(self.shutdown_button)
+        self.tabs.setCornerWidget(corner, Qt.TopRightCorner)
         self.setCentralWidget(self.tabs)
 
     def _build_menu(self) -> None:
@@ -231,6 +248,7 @@ class MainWindow(QMainWindow):
         self.controller.event_received.connect(self._on_event)
         self.controller.finished.connect(self._on_finished)
         self.rig_panel.read_limits.clicked.connect(self.read_device_limits)
+        self.shutdown_button.clicked.connect(self.shut_down)
 
     # Recipe files ------------------------------------------------------
 
@@ -339,6 +357,21 @@ class MainWindow(QMainWindow):
 
     # Rig ---------------------------------------------------------------
 
+    def _run_off_gui_thread(
+        self, name: str, work: Callable[[], None], finish: Callable[[], None]
+    ) -> None:
+        """Run ``work`` on its own thread, then ``finish`` on the GUI thread."""
+        worker = threading.Thread(target=work, name=name, daemon=True)
+        worker.start()
+
+        def poll() -> None:
+            if worker.is_alive():
+                QTimer.singleShot(100, poll)
+                return
+            finish()
+
+        QTimer.singleShot(100, poll)
+
     def read_device_limits(self) -> None:
         """Read every MFC full scale off the GUI thread and apply it to the editor."""
         if not self._rig.mfcs:
@@ -358,17 +391,11 @@ class MainWindow(QMainWindow):
                 except DeviceError as error:
                     results[name] = str(error)
 
-        worker = threading.Thread(target=work, name="sniffler-limits", daemon=True)
-        worker.start()
-
         def finish() -> None:
-            if worker.is_alive():
-                QTimer.singleShot(100, finish)
-                return
             self.rig_panel.read_limits.setEnabled(True)
             self.apply_device_limits(results)
 
-        QTimer.singleShot(100, finish)
+        self._run_off_gui_thread("sniffler-limits", work, finish)
 
     def apply_device_limits(self, results: dict[str, tuple[float, str] | str]) -> None:
         rig = self._rig
@@ -393,6 +420,33 @@ class MainWindow(QMainWindow):
         self._dirty = dirty
         self._refresh_title()
 
+    def shut_down(self) -> None:
+        """Close every valve and set every flow to zero, off the GUI thread."""
+        if self.controller.is_running or self._shutting_down or self._refuse_active_run():
+            return
+        self._set_shutting_down(True)
+        self.statusBar().showMessage("Closing all valves, every flow to zero.")
+        problems: list[str] = []
+
+        def work() -> None:
+            problems.extend(apply_safe_state(self._rig, **self._factories))
+
+        def finish() -> None:
+            self._set_shutting_down(False)
+            if problems:
+                self._tell(self, "Some valves or flows might still be on", "\n".join(problems))
+            else:
+                self.statusBar().showMessage("All valves closed, every flow zero.")
+
+        self._run_off_gui_thread("sniffler-shutdown", work, finish)
+
+    def _set_shutting_down(self, active: bool) -> None:
+        """A shutdown holds the device ports as a run does; Start and the reads wait."""
+        self._shutting_down = active
+        self.start_button.setEnabled(not active and not self.editor.problems())
+        self.rig_panel.read_limits.setEnabled(not active)
+        self.shutdown_button.setEnabled(not active)
+
     # Runs --------------------------------------------------------------
 
     def _refresh_summary(self) -> None:
@@ -415,18 +469,32 @@ class MainWindow(QMainWindow):
         self._seed_label.setText(
             "random, saved with the run" if seed is None else f"{seed} (from the recipe)"
         )
-        if not self.controller.is_running:
+        if not self.controller.is_running and not self._shutting_down:
             self.start_button.setEnabled(not problems)
             self.start_button.setToolTip(
                 "\n".join(problems) if problems else "Validate the recipe and start the run."
             )
+
+    def _refuse_active_run(self) -> bool:
+        """Report a run that the runs directory marks active. True when there is one."""
+        runs_directory = self._settings.runs_directory
+        directory = active_run(runs_directory)
+        if directory is None:
+            return False
+        self._tell(
+            self,
+            "A run is active",
+            f"{directory}\nWait for it to end, or remove the file "
+            f"{runs_directory / LOCK_FILE_NAME} if that run ended abnormally.",
+        )
+        return True
 
     def start_run(self) -> None:
         problems = self.editor.problems()
         if problems:
             self._tell(self, "The recipe is not valid", "\n".join(problems))
             return
-        if self.controller.is_running:
+        if self.controller.is_running or self._shutting_down or self._refuse_active_run():
             return
         recipe = self.editor.recipe()
         output = self._rig.ttl_output
@@ -436,15 +504,6 @@ class MainWindow(QMainWindow):
                 self._tell(self, "Cannot send the TTL pulse", problem)
                 return
         runs_directory = self._settings.runs_directory
-        directory = active_run(runs_directory)
-        if directory is not None:
-            self._tell(
-                self,
-                "A run is active",
-                f"{directory}\nWait for it to end, or remove the file "
-                f"{runs_directory / LOCK_FILE_NAME} if that run ended abnormally.",
-            )
-            return
         seed = recipe.schedule.seed
         if seed is None:
             seed = random.SystemRandom().randrange(2**31)
@@ -474,6 +533,7 @@ class MainWindow(QMainWindow):
         self.trigger_box.setEnabled(not running)
         self.ttl_box.setEnabled(not running)
         self.rig_panel.read_limits.setEnabled(not running)  # the run holds the MFC ports
+        self.shutdown_button.setEnabled(not running)  # Abort now ends a run
         self.start_now_button.setVisible(False)
         self.stop_button.setEnabled(running)
         self.abort_button.setEnabled(running)
@@ -543,6 +603,13 @@ class MainWindow(QMainWindow):
                     "Some valves or flows might still be on",
                     "The run did not stop in time. Check every valve and flow on the rig.",
                 )
+        if self._shutting_down:
+            # The commands that were sent must return and report before the window goes.
+            self._tell(
+                self, "A shutdown is in progress", "Wait for it to end, then close the window."
+            )
+            event.ignore()
+            return
         if not self.offer_to_save():
             event.ignore()
             return

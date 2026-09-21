@@ -848,6 +848,63 @@ class MainWindowTests(GuiTestCase):
         self.process_events(0.2)
         window.close()
 
+    def test_shut_down_applies_the_safe_state_without_a_run_and_holds_start(self) -> None:
+        window = self.window()
+        window.editor.set_recipe(make_recipe(0.5))
+        self.assertTrue(window.shutdown_button.isEnabled())
+
+        window.shutdown_button.click()
+        self.assertFalse(window.shutdown_button.isEnabled())
+        self.assertFalse(window.start_button.isEnabled(), "the shutdown holds the ports")
+        self.assertFalse(window.rig_panel.read_limits.isEnabled())
+        window.editor._name.setText("edited during the shutdown")
+        self.assertFalse(window.start_button.isEnabled(), "an edit does not free Start")
+        window.close()
+        self.assertEqual(window.warnings[-1][0], "A shutdown is in progress")
+        self.wait_until(window.shutdown_button.isEnabled)
+
+        self.assertEqual(self.rig.labjack.writes[-1][1], {8: False, 9: False, 16: False})
+        self.assertEqual(self.rig.alicats["mfc-500"].setpoints, [0.0])
+        self.assertEqual(self.rig.alicats["mfc-2000"].setpoints, [0.0])
+        self.assertTrue(window.start_button.isEnabled())
+        self.assertTrue(window.rig_panel.read_limits.isEnabled())
+        self.assertEqual(window.statusBar().currentMessage(), "All valves closed, every flow zero.")
+        self.assertEqual(len(window.warnings), 1, "the close refusal only")
+        self.assertFalse(self.runs.exists(), "not a run: no run directory")
+
+    def test_shut_down_reports_what_might_still_be_on_and_waits_for_a_run(self) -> None:
+        window = self.window()
+        window.editor.set_recipe(make_recipe(0.3))
+        self.rig.alicats["mfc-500"].prepare_error = "Cannot open the Alicat MFC: port busy"
+
+        window.shut_down()
+        self.wait_until(window.shutdown_button.isEnabled)
+        self.assertEqual(window.warnings[-1][0], "Some valves or flows might still be on")
+        self.assertIn("MFC mfc-500: Cannot open", window.warnings[-1][1])
+        self.assertEqual(self.rig.alicats["mfc-2000"].setpoints, [0.0])
+
+        self.rig.alicats["mfc-500"].prepare_error = None
+        window.start_run()
+        self.wait_until(lambda: window.controller.is_running)
+        self.assertFalse(window.shutdown_button.isEnabled(), "Abort now ends a run")
+        window.shut_down()
+        self.assertEqual(self.rig.labjack_opens, 1, "no second LabJack session during the run")
+        window.controller.abort_and_wait()
+        self.process_events(0.2)
+        self.assertTrue(window.shutdown_button.isEnabled())
+
+    def test_shut_down_is_refused_while_another_run_is_marked_active(self) -> None:
+        RunLock(self.runs, self.runs / "20260921-101500-other").acquire()
+        window = self.window()
+
+        window.shut_down()
+        self.process_events(0.2)
+
+        self.assertEqual(window.warnings[-1][0], "A run is active")
+        self.assertEqual(self.rig.labjack_opens, 0)
+        self.assertEqual(self.rig.alicats["mfc-500"].setpoints, [])
+        self.assertTrue(window.shutdown_button.isEnabled())
+
     def test_start_is_refused_while_the_recipe_has_problems(self) -> None:
         window = self.window()
         window.editor._steps.setData(window.editor._steps.index(0, 4), "999")

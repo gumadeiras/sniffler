@@ -141,6 +141,7 @@ QPushButton#primary {{
 }}
 QPushButton#primary:disabled {{ background: {SURFACE}; color: {DISABLED}; border-color: {LINE}; }}
 QPushButton#consequential {{ font-weight: bold; padding: 6px 14px; }}
+QPushButton#tabCorner {{ font-weight: bold; padding: 2px 14px; }}  /* fits the tab bar row */
 QHeaderView::section {{ background: {SURFACE}; color: {INK_SOFT}; border: 0;
     border-bottom: 1px solid {LINE}; border-right: 1px solid {LINE}; padding: 4px 6px; }}
 QTableView, QTableWidget, QListWidget {{ gridline-color: {LINE}; border: 1px solid {LINE}; }}

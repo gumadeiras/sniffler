@@ -2,8 +2,10 @@
 
 Step timing runs on the executor thread. The MFC serial traffic runs on its
 own thread (see ``mfc_worker``), so a slow MFC read never delays a valve.
+``apply_safe_state`` puts the rig in the safe state outside a run.
 """
 
+import asyncio
 import threading
 import time
 from collections.abc import Callable
@@ -123,6 +125,44 @@ class Status:
 
 class _Aborted(Exception):
     """Abort now was requested."""
+
+
+def apply_safe_state(
+    rig: RigMap,
+    *,
+    open_labjack: Callable[..., Any] = hardware.open_labjack,
+    open_alicat: Callable[..., Any] = hardware.open_alicat,
+) -> list[str]:
+    """Close every valve, drive the TTL output low, and zero every MFC, outside a run.
+
+    Every device is commanded even when another one fails. Each returned problem
+    says whether the hardware might have changed. Nothing is logged: this is not
+    a run, and the caller refuses it while a run is marked active.
+    """
+    problems: list[str] = []
+    lines = dict.fromkeys(rig.valves.values(), False)
+    if rig.ttl_output is not None:
+        lines[rig.ttl_output.channel] = False
+    try:
+        with open_labjack(rig.labjack_serial) as labjack:
+            labjack.write_digital_lines(lines)
+    except DeviceError as error:
+        problems.append(str(error))
+    return problems + asyncio.run(_zero_setpoints(rig, open_alicat))
+
+
+async def _zero_setpoints(rig: RigMap, open_alicat: Callable[..., Any]) -> list[str]:
+    problems: list[str] = []
+    for name, mfc in rig.mfcs.items():
+        try:
+            async with open_alicat(
+                mfc.port, mfc.unit, mfc.baud_rate, mfc.timeout_seconds
+            ) as session:
+                await session.prepare_setpoints()  # the mode and source guard
+                await session.write_setpoint(0.0)
+        except DeviceError as error:
+            problems.append(f"MFC {name}: {error}")
+    return problems
 
 
 class Executor:

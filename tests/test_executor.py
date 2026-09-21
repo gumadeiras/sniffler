@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from sniffler.config import TriggerSettings, TtlOutputSettings
-from sniffler.executor import Event, Executor, Phase, Sample, Status
+from sniffler.executor import Event, Executor, Phase, Sample, Status, apply_safe_state
 from sniffler.fakes import FakeRig, PulseTrain
 from sniffler.hardware import DeviceError
 from sniffler.recipe import MfcMap, Recipe, RigMap, Schedule, Step, Trial
@@ -829,6 +829,60 @@ class RecordFailureTests(ExecutorTestCase):
         kinds = [event["event"] for event in self.events(status)]
         self.assertEqual(kinds.count("trial_end"), 1, "the rows up to the failure are kept")
         self.assertEqual(kinds.count("trial_start"), 1, "the failed row is not in the file")
+
+
+class SafeStateOutsideARunTests(ExecutorTestCase):
+    def apply(self) -> list[str]:
+        return apply_safe_state(
+            RIG, open_labjack=self.rig.open_labjack, open_alicat=self.rig.open_alicat
+        )
+
+    def test_closes_every_valve_in_one_write_and_zeroes_every_mfc(self) -> None:
+        problems = self.apply()
+
+        self.assertEqual(problems, [])
+        self.assertEqual(
+            [states for _time, states in self.rig.labjack.writes], [{8: False, 9: False, 16: False}]
+        )
+        self.assertTrue(self.rig.labjack.closed)
+        for alicat in self.rig.alicats.values():
+            self.assertTrue(alicat.prepared, "the mode and source guard ran first")
+            self.assertEqual(alicat.setpoints, [0.0])
+            self.assertTrue(alicat.closed)
+        self.assertFalse(self.runs.exists(), "not a run: no run directory")
+
+    def test_drives_the_ttl_output_low_with_the_valves(self) -> None:
+        problems = apply_safe_state(
+            RIG_WITH_TTL, open_labjack=self.rig.open_labjack, open_alicat=self.rig.open_alicat
+        )
+
+        self.assertEqual(problems, [])
+        self.assertEqual(
+            [states for _time, states in self.rig.labjack.writes],
+            [{8: False, 9: False, 16: False, 5: False}],
+        )
+
+    def test_a_missing_labjack_still_zeroes_the_mfcs_and_is_reported(self) -> None:
+        self.rig.labjack_error = "Cannot connect to the LabJack U3: not found"
+
+        problems = self.apply()
+
+        self.assertEqual(problems, ["Cannot connect to the LabJack U3: not found"])
+        self.assertEqual(self.rig.alicats["mfc-500"].setpoints, [0.0])
+        self.assertEqual(self.rig.alicats["mfc-2000"].setpoints, [0.0])
+
+    def test_an_mfc_refusal_names_the_device_and_spares_no_other_command(self) -> None:
+        self.rig.alicats[
+            "mfc-500"
+        ].prepare_error = "Refusing to change the setpoint while its source is analog."
+
+        problems = self.apply()
+
+        self.assertEqual(len(problems), 1)
+        self.assertTrue(problems[0].startswith("MFC mfc-500: Refusing"), problems[0])
+        self.assertEqual(self.rig.alicats["mfc-500"].setpoints, [], "the guard held")
+        self.assertEqual(self.rig.alicats["mfc-2000"].setpoints, [0.0])
+        self.assertEqual(self.final_valves(), {8: False, 9: False, 16: False})
 
 
 if __name__ == "__main__":
