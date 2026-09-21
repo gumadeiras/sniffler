@@ -353,10 +353,11 @@ The *Run* tab shows the phase, the current trial and step, the commanded
 valves, the whole run as one timeline, and the MFC plot with one readout row
 for each MFC: commanded, measured, and deviation. A deviation of more than
 5 % of the device maximum is marked with a leading "!" in bold pink. The
-timeline has one lane for each valve the recipe opens, filled where the recipe
-plans it open. Nothing on this tab moves while a run changes the content: the
-labels have fixed heights, the plot axes are fixed at run start, and a splitter
-shares the width between the status and the plot. The window
+timeline names each trial on its own segment when the name fits, and has one
+lane for each valve the recipe opens, filled where the recipe plans it open.
+Nothing on this tab moves while a run changes the content: the labels have
+fixed heights, the plot axes are fixed at run start, and a splitter shares the
+width between the status and the plot. The window
 uses one light palette on every platform. Pink marks live attention only: the
 sniff, the current step, the progress cursor, and a high flow deviation.
 

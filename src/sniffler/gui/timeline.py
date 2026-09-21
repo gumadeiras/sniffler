@@ -12,12 +12,16 @@ from sniffler.recipe import Recipe
 TOP_PAD = theme.UNIT
 BAR_PX = 28
 LANE_PX = 14
-LEGEND_PX = 20
 LABEL_MAX_PX = 160
+NAME_PAD_PX = 4  # between a trial name and the edge of its segment
+NOTCH_PX = 6  # the step boundary notch at the bottom edge of a segment
 
 
 class TimelineWidget(QWidget):
-    """Trials shaded by type with step ticks; below, one lane per valve the recipe opens.
+    """Trials shaded by type and named on their segments; below, one lane per valve.
+
+    A trial name is elided to its segment and omitted when not one character fits.
+    Step boundaries are notches at the bottom edge, clear of the name.
 
     The lanes follow the recipe, not the run: they exist, empty, as soon as the recipe
     names the valves it opens, so the widget has the same height before, during, and
@@ -117,7 +121,7 @@ class TimelineWidget(QWidget):
         self.update()
 
     def _fit(self) -> None:
-        height = TOP_PAD + BAR_PX + LEGEND_PX + theme.UNIT
+        height = TOP_PAD + BAR_PX + theme.UNIT
         if self._lanes:
             height += theme.UNIT // 2 + LANE_PX * len(self._lanes)
         self.setMinimumHeight(height)
@@ -142,7 +146,7 @@ class TimelineWidget(QWidget):
         planned = self._total > 0 and bool(self._segments)
         scale = bar.width() / self._total if planned else 0.0
         if planned:
-            self._paint_trials(painter, bar, scale)
+            self._paint_trials(painter, bar, scale, metrics)
         else:
             painter.setPen(QColor(theme.INK_SOFT))
             painter.drawText(bar, Qt.AlignCenter, "No run planned.")
@@ -157,21 +161,26 @@ class TimelineWidget(QWidget):
         cursor_x = bar.left() + self._cursor * scale
         painter.setPen(QPen(QColor(theme.PINK), 2))
         painter.drawLine(int(cursor_x), int(bar.top()) - 6, int(cursor_x), bottom + 2)
-        self._paint_legend(painter, metrics)
 
-    def _paint_trials(self, painter: QPainter, bar: QRectF, scale: float) -> None:
+    def _paint_trials(self, painter: QPainter, bar: QRectF, scale: float, metrics) -> None:
         for index, (start, duration, name, boundaries) in enumerate(self._segments):
-            left = bar.left() + start * scale
-            width = max(1.0, duration * scale)
+            segment = QRectF(
+                bar.left() + start * scale, bar.top(), max(1.0, duration * scale), BAR_PX
+            )
             color = QColor(self._colors[name])
             if self._current is not None and index != self._current:
                 color.setAlpha(150)
             painter.setPen(QPen(QColor(theme.PANEL)))
             painter.setBrush(color)
-            painter.drawRect(QRectF(left, bar.top(), width, bar.height()))
+            painter.drawRect(segment)
             for boundary in boundaries:
-                x = bar.left() + boundary * scale
-                painter.drawLine(int(x), int(bar.top()) + 4, int(x), int(bar.bottom()) - 4)
+                x = int(bar.left() + boundary * scale)
+                painter.drawLine(x, int(bar.bottom()) - NOTCH_PX, x, int(bar.bottom()) - 1)
+            label = segment.adjusted(NAME_PAD_PX, 0, -NAME_PAD_PX, 0)
+            text = metrics.elidedText(name, Qt.ElideRight, int(label.width()))
+            if text.strip("\u2026"):
+                painter.setPen(QPen(QColor(theme.text_on(color))))
+                painter.drawText(label, Qt.AlignLeft | Qt.AlignVCenter, text)
 
     def _paint_lanes(self, painter, bar: QRectF, scale: float, label_width: int, metrics) -> int:
         """Draw one lane per valve under the bar. Return the bottom y of the last lane."""
@@ -201,24 +210,3 @@ class TimelineWidget(QWidget):
             )
             top += LANE_PX
         return top
-
-    def _paint_legend(self, painter: QPainter, metrics) -> None:
-        x = self.rect().left() + 2
-        baseline = self.rect().bottom() - 4
-        square = metrics.ascent() - 2
-        for name, color in self._colors.items():
-            painter.fillRect(x, baseline - square, square, square, color)
-            painter.setPen(QPen(QColor(theme.NAVY)))
-            painter.drawText(x + square + 4, baseline, name)
-            x += square + 4 + metrics.horizontalAdvance(name) + theme.SECTION_GAP
-        if self._marks:
-            painter.setPen(QPen(QColor(theme.NAVY), 2))
-            painter.drawLine(x + 2, baseline - square, x + 2, baseline)
-            painter.setPen(QPen(QColor(theme.NAVY)))
-            painter.drawText(x + 8, baseline, "sync pulse")
-        painter.setPen(QPen(QColor(theme.INK_SOFT)))
-        painter.drawText(
-            self.rect().adjusted(2, 0, -2, -2),
-            Qt.AlignBottom | Qt.AlignRight,
-            f"total {self._total:.1f} s",
-        )

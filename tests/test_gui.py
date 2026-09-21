@@ -348,6 +348,29 @@ class TimelineTests(GuiTestCase):
         timeline.clear()
         self.assertEqual(timeline.lanes(), {"odor-1": [], "odor-2": [], "final": []})
 
+    def test_trial_names_are_painted_on_segments_that_have_room(self) -> None:
+        from sniffler.gui import timeline as module
+        from sniffler.gui.timeline import TimelineWidget
+
+        def light_pixels(width: int) -> int:
+            # No lanes: the bar starts at x = 1 and the first of four equal trials
+            # ends at a quarter of the width. Read the text band, clear of the
+            # white outline and the step notches at the bottom edge.
+            widget = TimelineWidget()
+            widget.resize(width, widget.minimumHeight())
+            widget.set_plan(make_recipe(0.5), ("odor", "blank", "odor", "blank"))
+            image = widget.grab().toImage()
+            top = module.TOP_PAD + 2
+            bottom = module.TOP_PAD + module.BAR_PX - module.NOTCH_PX - 2
+            return sum(
+                image.pixelColor(x, y).lightnessF() > 0.9
+                for x in range(3, width // 4 - 2)
+                for y in range(top, bottom)
+            )
+
+        self.assertGreater(light_pixels(800), 0, "the name is drawn on the dark first trial")
+        self.assertEqual(light_pixels(40), 0, "a segment too narrow for one letter has no text")
+
     def test_adjacent_open_steps_merge_into_one_interval(self) -> None:
         from sniffler.gui.timeline import TimelineWidget
 

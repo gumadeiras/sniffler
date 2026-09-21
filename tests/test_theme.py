@@ -43,6 +43,26 @@ class ContrastTests(unittest.TestCase):
     def test_reference_ratio(self) -> None:
         self.assertAlmostEqual(theme.contrast_ratio("#000000", "#ffffff"), 21.0, places=2)
 
+    def test_text_on_every_trial_fill_is_legible(self) -> None:
+        # The timeline names each trial on its fill, full and dimmed to alpha 150.
+        from PySide6.QtGui import QColor
+
+        self.assertEqual(theme.text_on(QColor(theme.TRIAL_RAMP[0])), theme.PANEL)
+        self.assertEqual(theme.text_on(QColor(theme.TRIAL_RAMP[-1])), theme.NAVY)
+        for fill in theme.TRIAL_RAMP:
+            for alpha in (255, 150):
+                color = QColor(fill)
+                color.setAlpha(alpha)
+                text = theme.text_on(color)
+                shown = QColor.fromRgbF(
+                    *(
+                        alpha / 255 * value + 1.0 - alpha / 255
+                        for value in (color.redF(), color.greenF(), color.blueF())
+                    )
+                ).name()
+                with self.subTest(fill=fill, alpha=alpha):
+                    self.assertGreaterEqual(theme.contrast_ratio(text, shown), LARGE_MINIMUM)
+
 
 class IconTests(unittest.TestCase):
     @classmethod

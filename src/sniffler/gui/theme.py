@@ -34,7 +34,7 @@ LINE = "#d9d0bf"  # borders, from cream
 GOLD = "#8a5f10"  # cream darkened: the second plot series
 
 # Trial fills in the timeline: one lightness ramp of navy, so the order reads
-# without color vision. The legend names each trial as well.
+# without color vision. Each segment carries its trial name as well.
 TRIAL_RAMP = ("#122d58", "#3d5480", "#6c7fa3", "#9aa9c4", "#c4cde0", "#e2e7f0")
 # Plot series: one color for each MFC; commanded is dashed, actual is solid.
 SERIES = (NAVY, GOLD, "#6c7fa3")
@@ -99,6 +99,18 @@ def contrast_ratio(foreground: str, background: str) -> float:
 
     light, dark = sorted((luminance(foreground), luminance(background)), reverse=True)
     return (light + 0.05) / (dark + 0.05)
+
+
+def text_on(fill: QColor) -> str:
+    """The text color over a fill: white or navy, whichever contrasts more.
+
+    A translucent fill is judged as it appears over the white panel.
+    """
+    alpha = fill.alphaF()
+    shown = QColor.fromRgbF(
+        *(alpha * value + (1.0 - alpha) for value in (fill.redF(), fill.greenF(), fill.blueF()))
+    ).name()
+    return PANEL if contrast_ratio(PANEL, shown) >= contrast_ratio(NAVY, shown) else NAVY
 
 
 def font(size_px: int = BODY_PX, *, bold: bool = False) -> QFont:
