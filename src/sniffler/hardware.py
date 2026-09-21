@@ -4,7 +4,7 @@ import math
 import os
 import subprocess
 import sys
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterable, Iterator
 from contextlib import asynccontextmanager, contextmanager, suppress
 from pathlib import Path
 from typing import Any
@@ -206,6 +206,29 @@ class LabJackSession:
         except Exception as error:
             raise DeviceError(f"Cannot read {name}: {error}") from error
         return not bool(direction), bool(level)
+
+    def read_digital_lines(self, channels: Iterable[int]) -> dict[int, tuple[bool, bool]]:
+        """Return (is_input, level) of several digital lines from one device transaction.
+
+        Nothing on the device changes. A line that is an input is not driven; its
+        level is what the board sees, not a commanded state.
+        """
+        names = {channel: self._require_digital(channel) for channel in channels}
+        if not names:
+            return {}
+        import u3
+
+        try:
+            directions, levels = self._device.getFeedback(u3.PortDirRead(), u3.PortStateRead())
+        except Exception as error:
+            raise DeviceError(f"Cannot read {', '.join(names.values())}: {error}") from error
+        result: dict[int, tuple[bool, bool]] = {}
+        for channel in names:
+            port, bit = divmod(channel, 8)
+            key = ("FIO", "EIO", "CIO")[port]
+            is_output = bool(int(directions[key]) & (1 << bit))
+            result[channel] = (not is_output, bool(int(levels[key]) & (1 << bit)))
+        return result
 
     def timer_counter_configuration(self) -> dict[str, Any]:
         """Return the U3 timer and counter configuration. Nothing on the device changes."""

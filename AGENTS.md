@@ -25,7 +25,8 @@ Two programs share one hardware layer:
 - `recipe.py`: the contract (Step, Trial, Schedule, shutdown state), validation against the rig
   map, the block randomizer, recipe files.
 - `executor.py`: runs a recipe on its own thread; MFC traffic on a second thread; publishes
-  status. `runlog.py`: run directory, manifest, `events.csv`, `samples.csv`, lock file.
+  status. `runlog.py`: run directory, manifest, `events.csv`, one series CSV per MFC, valve,
+  and TTL line, lock file.
 - `trigger.py`: the start gate and the sync record on the U3 hardware counter. The step
   thread polls it only in idle time, never within 30 ms of a deadline. Run seconds count from
   device readiness; the schedule origin is the trigger time.

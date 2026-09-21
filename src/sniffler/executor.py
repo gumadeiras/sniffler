@@ -9,8 +9,7 @@ import asyncio
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
-from enum import StrEnum
+from dataclasses import replace
 from importlib import metadata
 from pathlib import Path
 from typing import Any
@@ -37,6 +36,7 @@ from sniffler.runlog import (
     new_run_directory,
     wall_time_now,
 )
+from sniffler.status import Event, Phase, Status
 from sniffler.trigger import READ_FAILURE_LIMIT, SyncRecorder, TriggerOutcome, wait_for_trigger
 
 SPIN_SECONDS = 0.015
@@ -51,76 +51,6 @@ def software_version() -> str:
         return metadata.version("sniffler")
     except metadata.PackageNotFoundError:
         return "unknown"
-
-
-class Phase(StrEnum):
-    IDLE = "idle"
-    STARTING = "starting"
-    WAITING = "waiting"
-    RUNNING = "running"
-    FINISHING = "finishing"
-    DONE = "done"
-    STOPPED = "stopped"
-    ABORTED = "aborted"
-    FAILED = "failed"
-
-    @property
-    def is_final(self) -> bool:
-        return self in {Phase.DONE, Phase.STOPPED, Phase.ABORTED, Phase.FAILED}
-
-
-@dataclass(frozen=True)
-class Event:
-    """One events.csv row, as the step-timing thread recorded it.
-
-    Delivered to ``on_event`` after the row is written. The MFC worker writes its
-    ``mfc_command`` and ``error`` rows itself and does not deliver them here.
-    """
-
-    event: str
-    returned_run_seconds: float
-    returned_wall_time: str
-    scheduled_run_seconds: float | None = None
-    commanded_run_seconds: float | None = None
-    trial_index: int | None = None
-    trial_name: str = ""
-    step_index: int | None = None
-    device: str = ""
-    value: object = ""
-    detail: str = ""
-    sync_count: int | None = None
-
-
-@dataclass(frozen=True)
-class Status:
-    """A snapshot of the run that is safe to read from any thread."""
-
-    phase: Phase = Phase.IDLE
-    message: str = ""
-    run_directory: Path | None = None
-    order: tuple[str, ...] = ()
-    planned_seconds: float = 0.0
-    trial_index: int | None = None
-    step_index: int | None = None
-    trial_started_seconds: float | None = None
-    step_started_seconds: float | None = None
-    step_duration_seconds: float | None = None
-    valves: dict[str, bool] = field(default_factory=dict)
-    setpoints: dict[str, float] = field(default_factory=dict)
-    stop_requested: bool = False
-    # Run seconds at which the trial schedule started: 0.0 for a run that did not
-    # wait, the trigger time for one that did, None until the trials start.
-    trigger_seconds: float | None = None
-    # Sync pulses recorded so far; None until the record starts at the schedule
-    # start, and always None when the rig has no trigger line.
-    sync_pulses: int | None = None
-    sync_stopped_seconds: float | None = None
-
-    @property
-    def trial_name(self) -> str | None:
-        if self.trial_index is None or self.trial_index >= len(self.order):
-            return None
-        return self.order[self.trial_index]
 
 
 class _Aborted(Exception):
@@ -302,7 +232,10 @@ class Executor:
                     "send_ttl": self._send_ttl,
                     "recipe": self._recipe.to_dict(),
                     "rig_map": self._rig.to_dict(),
-                }
+                },
+                mfcs=self._rig.mfcs,
+                valves=self._rig.valves,
+                ttl_lines=[self._ttl_line()] if self._send_ttl else [],
             )
         except RunLogError as error:
             lock.release()
@@ -376,6 +309,7 @@ class Executor:
                 raise DeviceError(worker.error or "The MFCs are not ready.")
             self._started_at = self._clock()
             self._record("run_start", detail=f"planned order: {', '.join(order)}")
+            self._read_valves(labjack)
             if self._send_ttl:
                 # A defined low before the TTL rises; before the counter arms, so a looped-back
                 # edge from this write is not counted.
@@ -425,6 +359,33 @@ class Executor:
     def _trigger_line(self) -> str:
         assert self._rig.trigger is not None
         return hardware.digital_channel_name(self._rig.trigger.channel)
+
+    def _ttl_line(self) -> str:
+        assert self._rig.ttl_output is not None
+        return hardware.digital_channel_name(self._rig.ttl_output.channel)
+
+    def _read_valves(self, labjack: Any) -> None:
+        """Record the state of every valve line before the run commands it.
+
+        Nothing on the device changes. Each valve series starts with this row, so
+        a valve the recipe never names still has a known state for the whole run.
+        A line that is still an input is not driven; the event row says so.
+        """
+        lines = labjack.read_digital_lines(list(self._rig.valves.values()))
+        row = {
+            "returned_run_seconds": self.elapsed_seconds(),
+            "returned_wall_time": wall_time_now(),
+        }
+        for name, channel in self._rig.valves.items():
+            is_input, level = lines[channel]
+            self._record(
+                "valve_read",
+                device=name,
+                value="open" if level else "closed",
+                detail="the line is an input; the valve is not driven" if is_input else "",
+                **row,
+            )
+            self._series("valve", name, level, row)
 
     def _arm_counter(self, labjack: Any) -> None:
         """Count pulses on the trigger line from now on."""
@@ -675,9 +636,11 @@ class Executor:
             if not record_all and previous is not None and previous.get(name) == state:
                 continue
             self._record("valve_command", device=name, value="open" if state else "closed", **row)
+            self._series("valve", name, state, row)
         if ttl is not None:
-            line = hardware.digital_channel_name(self._rig.ttl_output.channel)
+            line = self._ttl_line()
             self._record("ttl_command", device=line, value="high" if ttl else "low", **row)
+            self._series("ttl", line, ttl, row)
         if sync is not None and count is not None:
             sync.observe(count, returned)
         return returned
@@ -732,6 +695,31 @@ class Executor:
             self._log_failure = self._log_failure or str(error)
         if self._on_event is not None:
             self._on_event(Event(event, **fields))
+
+    def _series(self, kind: str, device: str, state: bool, row: dict[str, Any]) -> None:
+        """Write one row of a valve or TTL series from the fields of its event row.
+
+        Same failure rule as ``_record``: the row never stops a hardware command.
+        """
+        log = self._log
+        if log is None:
+            return
+        try:
+            log.digital_state(
+                kind,
+                device,
+                state,
+                returned_run_seconds=row["returned_run_seconds"],
+                commanded_run_seconds=row.get("commanded_run_seconds"),
+                scheduled_run_seconds=row.get("scheduled_run_seconds"),
+                trial_index=row.get("trial_index"),
+                trial_name=row.get("trial_name", ""),
+                step_index=row.get("step_index"),
+                sync_count=row.get("sync_count"),
+                wall_time=row["returned_wall_time"],
+            )
+        except RunLogError as error:
+            self._log_failure = self._log_failure or str(error)
 
     def _publish(self, **changes: Any) -> None:
         with self._lock:

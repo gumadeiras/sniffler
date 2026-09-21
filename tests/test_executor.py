@@ -104,9 +104,11 @@ class ExecutorTestCase(unittest.TestCase):
         with (status.run_directory / "events.csv").open(newline="") as file:
             return list(csv.DictReader(file))
 
-    def samples_csv(self, status: Status) -> list[dict[str, str]]:
+    def series(self, status: Status, kind: str, device: str) -> list[dict[str, str]]:
+        """Read one device series through the manifest index, as an analyst would."""
         assert status.run_directory is not None
-        with (status.run_directory / "samples.csv").open(newline="") as file:
+        file_name = self.manifest(status)["series"][kind][device]
+        with (status.run_directory / file_name).open(newline="") as file:
             return list(csv.DictReader(file))
 
     def manifest(self, status: Status) -> dict:
@@ -168,11 +170,30 @@ class ExitPathTests(ExecutorTestCase):
         self.assertIn("ended_at", manifest)
         self.assertTrue(manifest["software_version"])
 
-        samples = self.samples_csv(status)
-        self.assertGreater(len(samples), 2)
-        self.assertEqual({sample["mfc"] for sample in samples}, {"mfc-500", "mfc-2000"})
-        self.assertTrue(all(sample["mass_flow"] for sample in samples))
-        self.assertEqual(len(self.samples), len(samples))
+        self.assertEqual(sorted(manifest["series"]), ["mfc", "valve"], "no TTL series")
+        self.assertEqual(set(manifest["series"]["valve"]), {"odor-1", "odor-2", "final"})
+        samples = {mfc: self.series(status, "mfc", mfc) for mfc in ("mfc-500", "mfc-2000")}
+        for rows in samples.values():
+            self.assertGreater(len(rows), 1)
+            self.assertTrue(all(row["mass_flow"] for row in rows))
+        self.assertEqual(len(self.samples), sum(len(rows) for rows in samples.values()))
+        for valve in ("odor-1", "odor-2", "final"):
+            rows = self.series(status, "valve", valve)
+            commands = [e for e in events if e["event"] == "valve_command" and e["device"] == valve]
+            self.assertEqual(rows[0]["state"], "0", "the read before the first command")
+            self.assertEqual(rows[0]["commanded_run_seconds"], "")
+            self.assertEqual(
+                [row["returned_run_seconds"] for row in rows[1:]],
+                [e["returned_run_seconds"] for e in commands],
+                "one series row for each command row, with the same time",
+            )
+            self.assertEqual(
+                [row["state"] for row in rows[1:]],
+                ["1" if e["value"] == "open" else "0" for e in commands],
+            )
+            self.assertEqual(
+                [row["sync_count"] for row in rows[1:]], [e["sync_count"] for e in commands]
+            )
         self.assertEqual(
             {status.phase for status in self.statuses} & {Phase.RUNNING, Phase.DONE},
             {Phase.RUNNING, Phase.DONE},
@@ -196,6 +217,43 @@ class ExitPathTests(ExecutorTestCase):
         self.assertEqual(manifest["recipe"]["schedule"]["interleave"], "blank")
         starts = [e["trial_name"] for e in self.events(status) if e["event"] == "trial_start"]
         self.assertEqual(starts, ["odor", "blank", "odor", "blank"])
+
+    def test_reads_every_valve_line_once_before_the_first_command(self) -> None:
+        self.rig.labjack.levels[9] = True  # odor-2 was left open and driven before the run
+
+        status = self.executor().run()
+
+        self.assertEqual(status.phase, Phase.DONE, status.message)
+        events = self.events(status)
+        kinds = [event["event"] for event in events]
+        reads = [event for event in events if event["event"] == "valve_read"]
+        self.assertEqual(kinds.index("run_start") + 1, kinds.index("valve_read"))
+        self.assertLess(kinds.index("valve_read"), kinds.index("valve_command"))
+        self.assertEqual([event["device"] for event in reads], ["odor-1", "odor-2", "final"])
+        self.assertEqual([event["value"] for event in reads], ["closed", "open", "closed"])
+        self.assertEqual(reads[1]["detail"], "", "a driven output line")
+        self.assertIn("the line is an input", reads[0]["detail"])
+        self.assertEqual(len({event["returned_run_seconds"] for event in reads}), 1)
+        self.assertEqual(self.series(status, "valve", "odor-2")[0]["state"], "1")
+        self.assertEqual(self.series(status, "valve", "odor-1")[0]["state"], "0")
+        self.assertEqual(set(self.rig.labjack.writes[0][1]), {8, 9, 16}, "the first step, after")
+
+    def test_a_valve_read_failure_ends_in_the_safe_state_before_any_command(self) -> None:
+        def broken(_channels):
+            raise DeviceError("Cannot read FIO0, EIO0, EIO1, CIO0: usb gone")
+
+        self.rig.labjack.read_digital_lines = broken
+
+        status = self.executor().run()
+
+        self.assertEqual(status.phase, Phase.FAILED)
+        self.assertIn("usb gone", status.message)
+        self.assertEqual(self.final_valves(), {8: False, 9: False, 16: False})
+        self.assertEqual(len(self.rig.labjack.writes), 1, "only the safe state was written")
+        self.assertNotIn("valve_read", [event["event"] for event in self.events(status)])
+        rows = self.series(status, "valve", "odor-1")
+        self.assertEqual([row["state"] for row in rows], ["0"], "the safe state row only")
+        self.assertTrue(rows[0]["commanded_run_seconds"], "a command, not a read")
 
     def test_stop_finishes_the_current_trial_then_applies_the_shutdown_state(self) -> None:
         executor = self.executor(make_recipe(step_seconds=0.1, counts={"odor": 3, "blank": 3}))
@@ -706,6 +764,12 @@ class StartPulseTests(ExecutorTestCase):
         rows = self.ttl_rows(status)
         self.assertEqual([row["value"] for row in rows], ["low", "high", "low", "low"])
         self.assertEqual([row["device"] for row in rows], ["FIO5"] * 4)
+        series = self.series(status, "ttl", "FIO5")
+        self.assertEqual([row["state"] for row in series], ["0", "1", "0", "0"])
+        self.assertEqual(
+            [row["returned_run_seconds"] for row in series],
+            [row["returned_run_seconds"] for row in rows],
+        )
         self.assertEqual(rows[0]["detail"], "low before the run")
         rise, fall = rows[1], rows[2]
         first_valve = next(
@@ -838,6 +902,35 @@ class RecordFailureTests(ExecutorTestCase):
 
         self.assertEqual(status.phase, Phase.FAILED, status.message)
         self.assertIn("Cannot write events.csv", status.message)
+        self.assert_safe_after_log_failure(status)
+        kinds = [event["event"] for event in self.events(status)]
+        self.assertEqual(kinds.count("trial_end"), 1, "the rows up to the failure are kept")
+        self.assertEqual(kinds.count("trial_start"), 1, "the failed row is not in the file")
+
+    def test_a_series_row_failure_ends_the_run_in_the_safe_state(self) -> None:
+        real_state = RunLog.digital_state
+
+        def failing_state(log: RunLog, kind: str, device: str, state: bool, **fields) -> None:
+            if fields.get("trial_index") == 1:  # the disk fills during the second trial
+                raise RunLogError(
+                    f"Cannot write {kind}-{device}.csv: [Errno 28] No space left on device"
+                )
+            real_state(log, kind, device, state, **fields)
+
+        with patch.object(RunLog, "digital_state", failing_state):
+            status = self.executor().run()
+
+        self.assertEqual(status.phase, Phase.FAILED, status.message)
+        self.assertIn("Cannot write valve-", status.message)
+        self.assert_safe_after_log_failure(status)
+        kinds = [event["event"] for event in self.events(status)]
+        self.assertEqual(kinds.count("trial_start"), 2, "the event log kept running")
+        for valve in ("odor-1", "odor-2", "final"):
+            rows = self.series(status, "valve", valve)
+            self.assertEqual(rows[-1]["state"], "0", "the safe state row is still written")
+            self.assertNotIn("1", [row["trial_index"] for row in rows])
+
+    def assert_safe_after_log_failure(self, status: Status) -> None:
         self.assertIn("All valves closed, every flow zero", status.message)
         self.assertEqual(self.final_valves(), {8: False, 9: False, 16: False})
         self.assertEqual(self.rig.alicats["mfc-500"].setpoints[-1], 0.0)
@@ -845,9 +938,6 @@ class RecordFailureTests(ExecutorTestCase):
         self.assertFalse(any(thread.name == "sniffler-mfc" for thread in threading.enumerate()))
         self.assertFalse((self.runs / LOCK_FILE_NAME).exists())
         self.assertEqual(self.manifest(status)["outcome"], "failed")
-        kinds = [event["event"] for event in self.events(status)]
-        self.assertEqual(kinds.count("trial_end"), 1, "the rows up to the failure are kept")
-        self.assertEqual(kinds.count("trial_start"), 1, "the failed row is not in the file")
 
 
 class SafeStateOutsideARunTests(ExecutorTestCase):

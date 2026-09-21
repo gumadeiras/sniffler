@@ -21,6 +21,11 @@ from sniffler.runlog import (
 )
 
 
+def read_csv(path: Path) -> list[dict[str, str]]:
+    with path.open(newline="") as file:
+        return list(csv.DictReader(file))
+
+
 class RunLockTests(unittest.TestCase):
     def test_names_the_active_run_and_refuses_a_second_lock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -77,7 +82,12 @@ class RunLogTests(unittest.TestCase):
     def test_writes_flushed_rows_and_a_final_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log = RunLog(Path(directory, "run"))
-            log.open({"run_id": "run", "seed": 1})
+            log.open(
+                {"run_id": "run", "seed": 1},
+                mfcs=["mfc-500"],
+                valves=["odor-1", "Final valve"],
+                ttl_lines=["FIO5"],
+            )
             log.event("run_start", returned_run_seconds=0.0)
             log.event(
                 "valve_command",
@@ -91,45 +101,105 @@ class RunLogTests(unittest.TestCase):
                 value="open",
                 sync_count=4,
             )
-            log.sample(
+            log.digital_state("valve", "odor-1", False, returned_run_seconds=0.01)
+            log.digital_state(
+                "valve",
+                "odor-1",
+                True,
+                returned_run_seconds=1.0034,
+                commanded_run_seconds=1.0021,
+                scheduled_run_seconds=1.0,
+                trial_index=0,
+                trial_name="odor",
+                step_index=2,
+                sync_count=4,
+            )
+            log.digital_state("ttl", "FIO5", True, returned_run_seconds=1.0034)
+            log.mfc_sample(
                 "mfc-500",
                 run_seconds=1.5,
                 commanded_setpoint=100.0,
                 state={"setpoint": 100.0, "mass_flow": 99.2},
             )
 
-            with (log.directory / "events.csv").open(newline="") as file:
-                events = list(csv.DictReader(file))
-            with (log.directory / "samples.csv").open(newline="") as file:
-                samples = list(csv.DictReader(file))
             manifest = json.loads((log.directory / "manifest.json").read_text())
+            self.assertEqual(
+                manifest,
+                {
+                    "run_id": "run",
+                    "seed": 1,
+                    "series": {
+                        "mfc": {"mfc-500": "mfc-mfc-500.csv"},
+                        "valve": {
+                            "odor-1": "valve-odor-1.csv",
+                            "Final valve": "valve-final-valve.csv",
+                        },
+                        "ttl": {"FIO5": "ttl-fio5.csv"},
+                    },
+                },
+            )
+            events = read_csv(log.directory / "events.csv")
+            valve = read_csv(log.directory / "valve-odor-1.csv")
+            untouched = read_csv(log.directory / "valve-final-valve.csv")
+            ttl = read_csv(log.directory / "ttl-fio5.csv")
+            samples = read_csv(log.directory / "mfc-mfc-500.csv")
             self.assertEqual(len(events), 2, "rows are visible before close")
             self.assertEqual(events[0]["sync_count"], "")
             self.assertEqual(events[1]["sync_count"], "4")
             self.assertEqual(events[1]["returned_run_seconds"], "1.003400")
             self.assertEqual(events[1]["commanded_run_seconds"], "1.002100")
             self.assertEqual(events[1]["step_index"], "2")
+            self.assertEqual([row["state"] for row in valve], ["0", "1"])
+            self.assertEqual(valve[0]["commanded_run_seconds"], "", "a read has no command time")
+            self.assertEqual(valve[1]["returned_run_seconds"], events[1]["returned_run_seconds"])
+            self.assertEqual(valve[1]["trial_name"], "odor")
+            self.assertEqual(valve[1]["sync_count"], "4")
+            self.assertEqual(untouched, [], "a header and no rows for a device never written")
+            self.assertEqual([row["state"] for row in ttl], ["1"])
             self.assertEqual(samples[0]["mass_flow"], "99.2")
+            self.assertEqual(samples[0]["commanded_setpoint"], "100.0")
             self.assertEqual(samples[0]["pressure"], "")
-            self.assertEqual(manifest, {"run_id": "run", "seed": 1})
+            self.assertNotIn("mfc", samples[0], "one device for each file, no device column")
 
             log.close(outcome="done")
             manifest = json.loads((log.directory / "manifest.json").read_text())
             self.assertEqual(manifest["outcome"], "done")
             with self.assertRaisesRegex(RunLogError, "not open"):
                 log.event("late", returned_run_seconds=2.0)
+            with self.assertRaisesRegex(RunLogError, "not open"):
+                log.digital_state("valve", "odor-1", False, returned_run_seconds=2.0)
+
+    def test_refuses_a_device_without_a_series_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log = RunLog(Path(directory, "run"))
+            log.open({}, valves=["odor-1"])
+            with self.assertRaisesRegex(RunLogError, "no series file for mfc 'odor-1'"):
+                log.mfc_sample("odor-1", run_seconds=1.0, commanded_setpoint=None, state={})
+            with self.assertRaisesRegex(RunLogError, "no series file for valve 'odor-9'"):
+                log.digital_state("valve", "odor-9", True, returned_run_seconds=1.0)
+            log.close()
+
+    def test_refuses_two_names_that_share_a_file_before_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log = RunLog(Path(directory, "run"))
+            with self.assertRaisesRegex(
+                RunLogError, "'Odor 1' and 'odor-1' both map to .*valve-odor-1.csv"
+            ):
+                log.open({}, valves=["Odor 1", "odor-1"])
+            self.assertFalse(Path(directory, "run").exists())
+            RunLog(Path(directory, "other")).open({}, valves=["odor-1"], mfcs=["odor-1"])
 
     def test_a_disk_error_on_a_row_is_a_run_log_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log = RunLog(Path(directory, "run"))
-            log.open({})
-            full_disk = Mock(wraps=log._events)
+            log.open({}, mfcs=["mfc"])
+            full_disk = Mock(wraps=log._events._file)
             full_disk.flush.side_effect = OSError(28, "No space left on device")
-            log._events = full_disk
+            log._events._file = full_disk
 
             with self.assertRaisesRegex(RunLogError, "Cannot write events.csv.*No space left"):
                 log.event("late", returned_run_seconds=1.0)
-            log.sample("mfc", run_seconds=1.0, commanded_setpoint=None, state={})
+            log.mfc_sample("mfc", run_seconds=1.0, commanded_setpoint=None, state={})
             log.close(outcome="failed")
 
     def test_refuses_to_reuse_a_run_directory(self) -> None:

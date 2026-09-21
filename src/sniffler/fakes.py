@@ -45,6 +45,8 @@ class FakeLabJack:
         self, pulse_train: PulseTrain | None = None, clock: Callable[[], float] = time.monotonic
     ) -> None:
         self.writes: list[tuple[float, dict[int, bool]]] = []
+        # Driven output lines and their levels; every other line is an input at ``input_level``.
+        self.levels: dict[int, bool] = {}
         self.fail_on_write: int | None = None
         self.write_delay = 0.0
         self.closed = False
@@ -61,6 +63,12 @@ class FakeLabJack:
 
     def read_digital(self, _channel: int) -> tuple[bool, bool]:
         return True, self.input_level
+
+    def read_digital_lines(self, channels: Iterable[int]) -> dict[int, tuple[bool, bool]]:
+        return {
+            channel: (channel not in self.levels, self.levels.get(channel, self.input_level))
+            for channel in channels
+        }
 
     def timer_counter_configuration(self) -> dict[str, object]:
         return {
@@ -104,6 +112,7 @@ class FakeLabJack:
         if self.write_delay:
             time.sleep(self.write_delay)
         self.writes.append((time.perf_counter(), dict(states)))
+        self.levels.update(states)
         if not read_counter:
             return None
         if self.counter_error is not None:

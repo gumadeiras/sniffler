@@ -5,6 +5,7 @@ import json
 import os
 import re
 import threading
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 from typing import Any, TextIO
@@ -12,7 +13,6 @@ from typing import Any, TextIO
 LOCK_FILE_NAME = "active-run.lock"
 MANIFEST_NAME = "manifest.json"
 EVENTS_NAME = "events.csv"
-SAMPLES_NAME = "samples.csv"
 
 EVENT_COLUMNS = (
     "returned_wall_time",
@@ -28,15 +28,25 @@ EVENT_COLUMNS = (
     "detail",
     "sync_count",
 )
-SAMPLE_COLUMNS = (
+MFC_COLUMNS = (
     "wall_time",
     "run_seconds",
-    "mfc",
     "commanded_setpoint",
     "device_setpoint",
     "mass_flow",
     "pressure",
     "temperature",
+)
+DIGITAL_COLUMNS = (
+    "wall_time",
+    "returned_run_seconds",
+    "commanded_run_seconds",
+    "scheduled_run_seconds",
+    "trial_index",
+    "trial_name",
+    "step_index",
+    "state",
+    "sync_count",
 )
 
 
@@ -56,8 +66,16 @@ def wall_time_now() -> str:
 def run_id(recipe_name: str, now: datetime | None = None) -> str:
     """Return a timestamped directory name for a run."""
     now = now or datetime.now()
-    slug = re.sub(r"[^A-Za-z0-9]+", "-", recipe_name).strip("-").lower() or "run"
-    return f"{now:%Y%m%d-%H%M%S}-{slug}"
+    return f"{now:%Y%m%d-%H%M%S}-{_slug(recipe_name) or 'run'}"
+
+
+def series_file_name(kind: str, device: str) -> str:
+    """Return the file name of one device series, for example ``valve-odor-1.csv``."""
+    return f"{kind}-{_slug(device) or 'unnamed'}.csv"
+
+
+def _slug(text: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "-", text).strip("-").lower()
 
 
 def new_run_directory(runs_directory: Path, recipe_name: str) -> Path:
@@ -142,39 +160,92 @@ class RunLock:
             raise RunLockError(f"Cannot remove the run lock {self.path}: {error}") from error
 
 
+class _CsvStream:
+    """One append-only CSV file with fixed columns. Every row is flushed as it is written."""
+
+    def __init__(self, path: Path, columns: tuple[str, ...]) -> None:
+        self.path = path
+        self._columns = columns
+        self._file: TextIO | None = None
+        self._writer: Any = None
+        self._lock = threading.Lock()
+
+    def open(self) -> None:
+        self._file = self.path.open("a", newline="", encoding="utf-8")
+        self._writer = csv.writer(self._file)
+        self._writer.writerow(self._columns)
+        self._file.flush()
+
+    def append(self, row: list[object]) -> None:
+        with self._lock:
+            if self._file is None:
+                raise RunLogError("The run log is not open.")
+            try:
+                self._writer.writerow(row)
+                self._file.flush()
+            except OSError as error:
+                raise RunLogError(f"Cannot write {self.path.name}: {error}") from error
+
+    def close(self) -> None:
+        with self._lock:
+            file, self._file = self._file, None  # a late row is refused, not lost
+        if file is not None:
+            file.close()
+
+
 class RunLog:
-    """One run directory with a manifest and two append-only CSV logs.
+    """One run directory: a manifest, the event log, and one series file per device.
 
     Every row is written and flushed when it happens, so a crashed run keeps
-    every record up to the crash.
+    every record up to the crash. ``events.csv`` is the audit of the whole run in
+    order. Each MFC, each valve, and the TTL output has its own CSV with only its
+    rows; the manifest ``series`` table maps the device names to the files.
     """
 
     def __init__(self, directory: Path) -> None:
         self.directory = directory
-        self._events: TextIO | None = None
-        self._samples: TextIO | None = None
-        self._event_writer: Any = None
-        self._sample_writer: Any = None
+        self._events = _CsvStream(directory / EVENTS_NAME, EVENT_COLUMNS)
+        self._series: dict[tuple[str, str], _CsvStream] = {}
         self._manifest: dict[str, Any] = {}
-        self._lock = threading.Lock()
 
-    def open(self, manifest: dict[str, Any]) -> None:
+    def open(
+        self,
+        manifest: dict[str, Any],
+        *,
+        mfcs: Iterable[str] = (),
+        valves: Iterable[str] = (),
+        ttl_lines: Iterable[str] = (),
+    ) -> None:
+        """Create the directory, the manifest, and every log file with its header.
+
+        Each named device gets its series file now, so a device that is never
+        commanded still leaves a file. Two devices of one kind whose names map to
+        the same file name are refused before anything is written.
+        """
+        index: dict[str, dict[str, str]] = {}
+        for kind, names in (("mfc", mfcs), ("valve", valves), ("ttl", ttl_lines)):
+            for name in names:
+                file_name = series_file_name(kind, name)
+                taken = next((n for n, f in index.get(kind, {}).items() if f == file_name), None)
+                if taken is not None:
+                    raise RunLogError(
+                        f"The {kind} names {taken!r} and {name!r} both map to the log file "
+                        f"{file_name}. Rename one in lab.toml."
+                    )
+                index.setdefault(kind, {})[name] = file_name
+                columns = MFC_COLUMNS if kind == "mfc" else DIGITAL_COLUMNS
+                self._series[kind, name] = _CsvStream(self.directory / file_name, columns)
         try:
             self.directory.mkdir(parents=True, exist_ok=False)
-            self._manifest = dict(manifest)
+            self._manifest = {**manifest, "series": index}
             self._write_manifest()
-            self._events = (self.directory / EVENTS_NAME).open("a", newline="", encoding="utf-8")
-            self._samples = (self.directory / SAMPLES_NAME).open("a", newline="", encoding="utf-8")
+            self._events.open()
+            for stream in self._series.values():
+                stream.open()
         except OSError as error:
             raise RunLogError(
                 f"Cannot create the run directory {self.directory}: {error}"
             ) from error
-        self._event_writer = csv.writer(self._events)
-        self._sample_writer = csv.writer(self._samples)
-        self._event_writer.writerow(EVENT_COLUMNS)
-        self._sample_writer.writerow(SAMPLE_COLUMNS)
-        self._events.flush()
-        self._samples.flush()
 
     def _write_manifest(self) -> None:
         target = self.directory / MANIFEST_NAME
@@ -203,30 +274,24 @@ class RunLog:
         ``sync_count`` is the pulse count on the trigger line when the event was
         recorded, for rows that read it; empty otherwise.
         """
-        row = [
-            returned_wall_time or wall_time_now(),
-            _seconds(scheduled_run_seconds),
-            _seconds(commanded_run_seconds),
-            _seconds(returned_run_seconds),
-            event,
-            "" if trial_index is None else trial_index,
-            trial_name,
-            "" if step_index is None else step_index,
-            device,
-            value,
-            detail,
-            "" if sync_count is None else sync_count,
-        ]
-        with self._lock:
-            if self._events is None or self._event_writer is None:
-                raise RunLogError("The run log is not open.")
-            try:
-                self._event_writer.writerow(row)
-                self._events.flush()
-            except OSError as error:
-                raise RunLogError(f"Cannot write {EVENTS_NAME}: {error}") from error
+        self._events.append(
+            [
+                returned_wall_time or wall_time_now(),
+                _seconds(scheduled_run_seconds),
+                _seconds(commanded_run_seconds),
+                _seconds(returned_run_seconds),
+                event,
+                _blank(trial_index),
+                trial_name,
+                _blank(step_index),
+                device,
+                value,
+                detail,
+                _blank(sync_count),
+            ]
+        )
 
-    def sample(
+    def mfc_sample(
         self,
         mfc: str,
         *,
@@ -236,34 +301,64 @@ class RunLog:
         wall_time: str | None = None,
     ) -> None:
         """Append one MFC reading next to the setpoint that was commanded."""
-        row = [
-            wall_time or wall_time_now(),
-            _seconds(run_seconds),
-            mfc,
-            "" if commanded_setpoint is None else commanded_setpoint,
-            state.get("setpoint", ""),
-            state.get("mass_flow", ""),
-            state.get("pressure", ""),
-            state.get("temperature", ""),
-        ]
-        with self._lock:
-            if self._samples is None or self._sample_writer is None:
-                raise RunLogError("The run log is not open.")
-            try:
-                self._sample_writer.writerow(row)
-                self._samples.flush()
-            except OSError as error:
-                raise RunLogError(f"Cannot write {SAMPLES_NAME}: {error}") from error
+        self._stream("mfc", mfc).append(
+            [
+                wall_time or wall_time_now(),
+                _seconds(run_seconds),
+                _blank(commanded_setpoint),
+                state.get("setpoint", ""),
+                state.get("mass_flow", ""),
+                state.get("pressure", ""),
+                state.get("temperature", ""),
+            ]
+        )
+
+    def digital_state(
+        self,
+        kind: str,
+        device: str,
+        state: bool,
+        *,
+        returned_run_seconds: float,
+        commanded_run_seconds: float | None = None,
+        scheduled_run_seconds: float | None = None,
+        trial_index: int | None = None,
+        trial_name: str = "",
+        step_index: int | None = None,
+        sync_count: int | None = None,
+        wall_time: str | None = None,
+    ) -> None:
+        """Append one state of a valve or of the TTL output; ``state`` is written as 1 or 0.
+
+        A row from a read has no commanded or scheduled time. A row from a command
+        carries the same times and sync count as its ``events.csv`` row.
+        """
+        self._stream(kind, device).append(
+            [
+                wall_time or wall_time_now(),
+                _seconds(returned_run_seconds),
+                _seconds(commanded_run_seconds),
+                _seconds(scheduled_run_seconds),
+                _blank(trial_index),
+                trial_name,
+                _blank(step_index),
+                int(state),
+                _blank(sync_count),
+            ]
+        )
+
+    def _stream(self, kind: str, device: str) -> _CsvStream:
+        try:
+            return self._series[kind, device]
+        except KeyError:
+            raise RunLogError(f"The run log has no series file for {kind} {device!r}.") from None
 
     def close(self, **final_fields: Any) -> None:
         """Close the logs and record the outcome in the manifest."""
-        with self._lock:
-            files = (self._events, self._samples)
-            self._events = self._samples = None  # a late row is refused, not lost in a closed file
         try:
-            for file in files:
-                if file is not None:
-                    file.close()
+            self._events.close()
+            for stream in self._series.values():
+                stream.close()
             if final_fields and self._manifest:
                 self._manifest.update(final_fields)
                 self._write_manifest()
@@ -273,3 +368,7 @@ class RunLog:
 
 def _seconds(value: float | None) -> str:
     return "" if value is None else f"{value:.6f}"
+
+
+def _blank(value: object) -> object:
+    return "" if value is None else value

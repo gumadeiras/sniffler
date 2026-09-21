@@ -494,7 +494,9 @@ recipe name:
 - `manifest.json`: copies of the recipe (with the valve contents) and rig map,
   the seed, the resolved trial order, the start time, the software version,
   the operator notes, and the outcome.
-- `events.csv`: every valve and MFC command, trial boundaries, stop and abort
+- `events.csv`: the audit of the whole run in order: the state of every valve
+  line read before the first command (`valve_read`), every valve and MFC
+  command, trial boundaries, stop and abort
   requests, errors, the counter enable and restore, the trigger wait and its
   end, every sync pulse, each edge of the TTL output (`ttl_command`), and
   the end state or the all-off state. The time columns are seconds since the run started, which is
@@ -506,7 +508,19 @@ recipe name:
   waited for a trigger, `trigger_received` marks the trial schedule origin and the manifest
   repeats it as `trigger_seconds`. The manifest also holds `sync_pulses` and,
   when the record stopped early, `sync_recording_stopped_seconds`.
-- `samples.csv`: each MFC reading next to the setpoint that was commanded.
+- One series file for each device, for analysis: `mfc-<name>.csv`,
+  `valve-<name>.csv`, and, when the run sends a TTL, `ttl-<line>.csv`. The
+  file names are made from the `lab.toml` names; the `series` table in the
+  manifest maps each device name to its file, by kind. An MFC file has one
+  row for each reading: `wall_time`, `run_seconds`, `commanded_setpoint`,
+  `device_setpoint`, `mass_flow`, `pressure`, `temperature`. A valve or TTL
+  file has one row for each state: `wall_time`, `returned_run_seconds`,
+  `commanded_run_seconds`, `scheduled_run_seconds`, `trial_index`,
+  `trial_name`, `step_index`, `state` (`1` open or high, `0` closed or low),
+  and `sync_count`. The first row of each valve file is the state read when
+  the devices were ready, with no command time; the other rows have the same
+  times and count as their `events.csv` rows. A device that the recipe never
+  commands still has its file, with the header and the read row.
 
 Every row is written when it happens, so a crashed run keeps its record.
 

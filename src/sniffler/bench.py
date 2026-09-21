@@ -176,11 +176,12 @@ def check_safe(bench: Bench) -> Result:
         outputs["TTL output"] = bench.rig.ttl_output.channel
     try:
         with bench.open_labjack(bench.rig.labjack_serial) as session:
-            for name, channel in outputs.items():
-                _is_input, level = session.read_digital(channel)
-                lines.append(f"{name} (channel {channel}): {'high' if level else 'low'}")
-                if level:
-                    problems.append(f"{name} is high")
+            levels = session.read_digital_lines(outputs.values())
+        for name, channel in outputs.items():
+            _is_input, level = levels[channel]
+            lines.append(f"{name} (channel {channel}): {'high' if level else 'low'}")
+            if level:
+                problems.append(f"{name} is high")
     except DeviceError as error:
         return Result("safe", "fail", [str(error)])
     for name in bench.rig.mfcs:
@@ -222,11 +223,8 @@ def check_valves(bench: Bench) -> Result:
                 time.sleep(VALVE_HOLD_SECONDS)
             finally:
                 write(dict.fromkeys(channels, False))  # also on Ctrl-C
-            open_after = [
-                name
-                for name, channel in bench.rig.valves.items()
-                if session.read_digital(channel)[1]
-            ]
+            levels = session.read_digital_lines(channels)
+            open_after = [name for name, channel in bench.rig.valves.items() if levels[channel][1]]
     except DeviceError as error:
         return Result("valves", "fail", [*lines, str(error)])
     lines.append(f"write round trip {milliseconds(round_trips)}")

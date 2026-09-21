@@ -134,7 +134,7 @@ class MfcWorker(threading.Thread):
             failures[name] = 0
             run_seconds = self._clock()
             wall_time = wall_time_now()
-            self._log.sample(
+            self._log.mfc_sample(
                 name,
                 run_seconds=run_seconds,
                 commanded_setpoint=self._commanded[name],

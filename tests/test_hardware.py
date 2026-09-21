@@ -40,6 +40,14 @@ class FakeCounterRead(FakeFeedbackCommand):
     pass
 
 
+class FakePortDirectionRead(FakeFeedbackCommand):
+    pass
+
+
+class FakePortLevelRead(FakeFeedbackCommand):
+    pass
+
+
 COUNTER_CONFIGURATION = {
     "EnableCounter0": False,
     "EnableCounter1": False,
@@ -63,6 +71,8 @@ class FakeU3:
         self.config_reads = 0
         self.line_is_output = 0
         self.line_level = 1
+        self.port_directions = {"FIO": 0, "EIO": 0, "CIO": 0}
+        self.port_levels = {"FIO": 0, "EIO": 0, "CIO": 0}
         self.counter_value = 7
         self.io_configurations: list[dict] = []
         self.instances.append(self)
@@ -81,6 +91,10 @@ class FakeU3:
                 results.append(self.line_level)
             elif isinstance(command, FakeCounterRead):
                 results.append(self.counter_value)
+            elif isinstance(command, FakePortDirectionRead):
+                results.append(dict(self.port_directions))
+            elif isinstance(command, FakePortLevelRead):
+                results.append(dict(self.port_levels))
             else:
                 results.append(None)
         return results
@@ -115,6 +129,8 @@ class LabJackTests(unittest.TestCase):
             BitDirWrite=FakeFeedbackCommand,
             BitDirRead=FakeDirectionRead,
             BitStateRead=FakeLevelRead,
+            PortDirRead=FakePortDirectionRead,
+            PortStateRead=FakePortLevelRead,
             Counter=FakeCounterRead,
         )
 
@@ -234,6 +250,36 @@ class LabJackTests(unittest.TestCase):
             open_labjack() as session,
         ):
             session.read_digital(2)
+
+    def test_reads_several_lines_in_one_transaction_without_changing_them(self) -> None:
+        with patch.dict(sys.modules, {"u3": self.u3_module}), open_labjack() as session:
+            device = session._device
+            device.port_directions = {"FIO": 0b00010000, "EIO": 0b00000010, "CIO": 0}
+            device.port_levels = {"FIO": 0b00110000, "EIO": 0b00000010, "CIO": 0b0001}
+            lines = session.read_digital_lines([4, 5, 9, 10, 16])
+            self.assertEqual(session.read_digital_lines([]), {})
+
+        self.assertEqual(
+            lines,
+            {
+                4: (False, True),  # driven output, high
+                5: (True, True),  # input that reads high
+                9: (False, True),
+                10: (True, False),
+                16: (True, True),
+            },
+        )
+        self.assertEqual(len(device.feedback), 1, "one packet for every line")
+        direction, level = device.feedback[0]
+        self.assertIsInstance(direction, FakePortDirectionRead)
+        self.assertIsInstance(level, FakePortLevelRead)
+        with (
+            patch.dict(sys.modules, {"u3": self.u3_module}),
+            self.assertRaisesRegex(DeviceError, "FIO2 is configured as analog"),
+            open_labjack() as session,
+        ):
+            session.read_digital_lines([9, 2])
+        self.assertEqual(len(FakeU3.instances[-1].feedback), 0, "refused before the packet")
 
     def test_counts_pulses_with_the_hardware_counter_and_restores_the_device(self) -> None:
         with patch.dict(sys.modules, {"u3": self.u3_module}), open_labjack() as session:
