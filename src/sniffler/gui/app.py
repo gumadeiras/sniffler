@@ -633,15 +633,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Open the window on fake devices with a sample recipe. No hardware is used.",
     )
     arguments = parser.parse_args(argv)
-    if arguments.demo:
-        from sniffler.gui.demo import demo_window
-
-        application = QApplication.instance() or QApplication(sys.argv[:1])
-        theme.apply(application)
-        window = demo_window()
-        window.show()
-        return application.exec()
-    if argv is None:
+    if argv is None and not arguments.demo:
         restarted_status = hardware.relaunch_with_homebrew_exodriver("sniffler.gui.app")
         if restarted_status is not None:
             return restarted_status
@@ -649,11 +641,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     theme.apply(application)
     try:
         settings = load_settings(arguments.config)
-        rig = rig_map_from_settings(settings)
+        if arguments.demo:
+            # The demo has its own fake rig; only the runs directory comes from the file.
+            from sniffler.gui.demo import demo_window
+
+            window = demo_window(settings.runs_directory)
+        else:
+            window = MainWindow(settings, rig_map_from_settings(settings))
     except ConfigError as error:
         QMessageBox.critical(None, "Configuration error", str(error))
         return 2
-    window = MainWindow(settings, rig)
     window.show()
     return application.exec()
 

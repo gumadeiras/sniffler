@@ -7,6 +7,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -15,7 +16,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from sniffler.executor import Phase
 from sniffler.fakes import FakeLabJack, PulseTrain
-from sniffler.gui import demo
+from sniffler.gui import app, demo
 from sniffler.recipe import (
     Recipe,
     Schedule,
@@ -51,7 +52,7 @@ class DemoTests(unittest.TestCase):
             time.sleep(0.005)
 
     def test_demo_recipe_is_valid_for_the_demo_rig(self) -> None:
-        rig = rig_map_from_settings(demo.demo_settings())
+        rig = rig_map_from_settings(demo.demo_settings(Path(self.temporary.name, "runs")))
         recipe = demo.demo_recipe()
         self.assertEqual(recipe_problems(recipe, rig), [])
         self.assertEqual(recipe.schedule.interleave, "blank")
@@ -65,6 +66,30 @@ class DemoTests(unittest.TestCase):
         self.assertEqual(recipe.valve_label("valve C"), "geosmin")
         self.assertEqual(list(rig.mfcs), ["carrier flow", "odor flow"])
         self.assertTrue(all(mfc.port.startswith("fake:") for mfc in rig.mfcs.values()))
+
+    def test_demo_writes_runs_to_the_configured_directory(self) -> None:
+        config = Path(self.temporary.name, "lab.toml")
+        config.write_text('[runs]\ndirectory = "demo-out"\n', encoding="utf-8")
+        windows: list = []
+        open_demo = demo.demo_window
+
+        def record_window(runs_directory: Path):
+            # The test store keeps the demo away from the real demo settings.
+            windows.append(open_demo(runs_directory, self.store))
+            return windows[-1]
+
+        with (
+            mock.patch.object(demo, "demo_window", record_window),
+            mock.patch.object(QApplication, "exec", lambda _application: 0),
+        ):
+            status = app.main(["--demo", "--config", str(config)])
+        self.assertEqual(status, 0)
+        self.assertEqual(len(windows), 1)
+        window = windows[0]
+        self.assertIn("sniffler demo", window.windowTitle())
+        self.assertEqual(window._settings.runs_directory, config.parent / "demo-out")
+        self.assertIn("demo-out", window.statusBar().currentMessage())
+        window.close()
 
     def test_demo_opens_its_own_recipe_even_when_another_was_remembered(self) -> None:
         other = Path(self.temporary.name, "real-rig.json")
@@ -80,14 +105,14 @@ class DemoTests(unittest.TestCase):
         self.store.setValue("last_recipe", str(other))
         self.store.sync()
 
-        window = demo.demo_window(self.store, Path(self.temporary.name, "runs-demo"))
+        window = demo.demo_window(Path(self.temporary.name, "runs"), self.store)
 
         self.assertIsNone(window.recipe_path)
         self.assertEqual(window.editor.recipe().name, "demo pulses")
         self.assertTrue(window.start_button.isEnabled())
 
     def test_demo_window_is_marked_and_runs_on_fake_devices(self) -> None:
-        window = demo.demo_window(self.store, Path(self.temporary.name, "runs-demo"))
+        window = demo.demo_window(Path(self.temporary.name, "runs"), self.store)
         warnings: list[tuple[str, str]] = []
         window._tell = lambda _parent, title, text: warnings.append((title, text))
         window._ask = lambda *_arguments, **_options: QMessageBox.Discard
@@ -144,7 +169,7 @@ class DemoTests(unittest.TestCase):
         self.assertEqual(labjack.count_reads, 4, "the reset is not a counted read")
 
     def test_demo_run_starts_on_the_fake_pulse_and_marks_the_train(self) -> None:
-        window = demo.demo_window(self.store, Path(self.temporary.name, "runs-demo"))
+        window = demo.demo_window(Path(self.temporary.name, "runs"), self.store)
         warnings: list[tuple[str, str]] = []
         window._tell = lambda _parent, title, text: warnings.append((title, text))
         window._ask = lambda *_arguments, **_options: QMessageBox.Discard

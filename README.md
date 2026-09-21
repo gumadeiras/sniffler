@@ -395,8 +395,10 @@ trial. The fake MFCs answer with lag and noise. The
 fake trigger line pulses 3 s after the run arms and then once each second, so
 *Wait for TTL* starts the trials by itself and the timeline shows sync marks.
 Nothing reaches a serial port or the LabJack. The title bar says *sniffler
-demo*, the status bar says *fake devices, no hardware*, and runs are written to
-`runs-demo`. Use it to learn the window or to debug the interface.
+demo* and the status bar says *fake devices, no hardware*. Runs are written to
+the runs directory of `lab.toml`, or of the file given with `--config`; their
+manifests name the program *sniffler demo*. Use it to learn the window or to
+debug the interface.
 
 ### Stop and abort
 

@@ -1,7 +1,7 @@
 """Demo mode: the whole window on fake devices, so the UI can be watched and debugged.
 
 Nothing here opens a port or a LabJack. The window says so in its title and status
-bar, and its runs go to a separate folder.
+bar. Runs go to the runs directory of the configuration, as in the real window.
 """
 
 from pathlib import Path
@@ -13,7 +13,6 @@ from sniffler.fakes import FakeRig, PulseTrain
 from sniffler.gui.app import MainWindow
 from sniffler.recipe import Recipe, Schedule, Step, Trial, rig_map_from_settings
 
-RUNS_DIRECTORY = Path("runs-demo")
 VALVES = {"valve A": 8, "valve B": 9, "valve C": 10, "valve D": 11}
 ODORS = {
     "valve A": "ethyl acetate",
@@ -29,7 +28,7 @@ ODOR = 100.0
 PULSES = PulseTrain(first_seconds=3.0, period_seconds=1.0)
 
 
-def demo_settings(runs_directory: Path = RUNS_DIRECTORY) -> Settings:
+def demo_settings(runs_directory: Path) -> Settings:
     return Settings(
         labjack_serial=0,
         alicats={
@@ -78,9 +77,7 @@ def demo_recipe() -> Recipe:
     )
 
 
-def demo_window(
-    store: QSettings | None = None, runs_directory: Path = RUNS_DIRECTORY
-) -> MainWindow:
+def demo_window(runs_directory: Path, store: QSettings | None = None) -> MainWindow:
     settings = demo_settings(runs_directory)
     rig = demo_rig()
     window = MainWindow(
