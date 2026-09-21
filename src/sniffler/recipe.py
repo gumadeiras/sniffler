@@ -21,6 +21,10 @@ RECIPE_FORMAT = "sniffler-recipe/1"
 ORDERINGS = ("block-randomized", "as-listed")
 MAX_CONSECUTIVE_TRIALS = 2
 ORDER_RETRY_CAP = 1000
+# The TTL pulse falls inside the first step. Its fall is timed from the moment the high
+# write returned, so the pulse must end this far before the step ends: one USB round
+# trip plus the executor's spin window, the same margin the sync polls keep.
+START_PULSE_MARGIN_SECONDS = 0.03
 
 
 class RecipeError(ValueError):
@@ -242,8 +246,8 @@ def start_pulse_problem(recipe: Recipe, seconds: object) -> str | None:
     """Return why a start pulse of this width cannot go with this recipe, or None when it can.
 
     The pulse rises with the first step of the first trial and falls inside that
-    step, so its width must be less than the first step of every trial that can
-    run first.
+    step, so its width plus the margin must be less than the first step of every
+    trial that can run first.
     """
     if isinstance(seconds, bool) or not isinstance(seconds, int | float):
         return "The pulse width must be a number of seconds."
@@ -255,10 +259,10 @@ def start_pulse_problem(recipe: Recipe, seconds: object) -> str | None:
         if trial.steps and recipe.schedule.counts.get(trial.name, 0) > 0
     ]
     shortest = min(first_steps, default=None)
-    if shortest is not None and seconds >= shortest:
+    if shortest is not None and seconds + START_PULSE_MARGIN_SECONDS >= shortest:
         return (
-            f"The pulse width must be less than the first step of every trial; "
-            f"the shortest first step is {shortest:g} s."
+            f"The pulse must end at least {START_PULSE_MARGIN_SECONDS * 1000:g} ms before the "
+            f"first step of every trial ends; the shortest first step is {shortest:g} s."
         )
     return None
 

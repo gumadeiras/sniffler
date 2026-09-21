@@ -115,8 +115,10 @@ class ValidationTests(unittest.TestCase):
         recipe = make_recipe()  # first steps: odor 0.5 s, blank 1.0 s
 
         self.assertIsNone(start_pulse_problem(recipe, 0.005))
-        self.assertIsNone(start_pulse_problem(recipe, 0.499))
-        self.assertIn("shortest first step is 0.5 s", start_pulse_problem(recipe, 0.5))
+        self.assertIsNone(start_pulse_problem(recipe, 0.469), "30 ms margin before the step ends")
+        problem = start_pulse_problem(recipe, 0.47)
+        self.assertIn("at least 30 ms before", problem)
+        self.assertIn("shortest first step is 0.5 s", problem)
         self.assertIn("greater than zero", start_pulse_problem(recipe, 0.0))
         self.assertIn("greater than zero", start_pulse_problem(recipe, float("inf")))
         self.assertIn("number of seconds", start_pulse_problem(recipe, "5 ms"))
@@ -124,6 +126,7 @@ class ValidationTests(unittest.TestCase):
         # A trial with a zero count cannot run first, so its short step does not count.
         rested = make_recipe(schedule=Schedule({"odor": 0, "blank": 3}, "as-listed", 7))
         self.assertIsNone(start_pulse_problem(rested, 0.9))
+        self.assertIsNotNone(start_pulse_problem(rested, 0.98))
 
     def test_unknown_mfc_hint_quotes_a_name_with_a_space(self) -> None:
         from sniffler.recipe import _step_problems

@@ -454,8 +454,9 @@ trigger time.
 
 In `pulse` mode the line goes low again after `pulse_seconds`, counted from
 the moment the high write returned, as one extra command inside the first
-step. The width must be less than the first step of every trial that can run
-first; *Start run* refuses a longer pulse before the run begins. In `high`
+step. The pulse must end at least 30 ms before the first step of every trial
+that can run first ends, so that the low write never delays the second step;
+*Start run* refuses a longer pulse before the run begins. In `high`
 mode the line stays high through the trials and falls with the end state. In
 both modes the end state, the all-off state, and *Shut down the rig* drive the
 line low. The checkbox is remembered between sessions; the manifest records

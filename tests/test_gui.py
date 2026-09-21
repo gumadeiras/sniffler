@@ -549,23 +549,23 @@ class MainWindowTests(GuiTestCase):
         self.assertTrue(plain.ttl_box.isHidden())
 
         rig = RigMap(
-            RIG.labjack_serial, RIG.valves, RIG.mfcs, None, TtlOutputSettings(5, "pulse", 0.02)
+            RIG.labjack_serial, RIG.valves, RIG.mfcs, None, TtlOutputSettings(5, "pulse", 0.01)
         )
         window = self.window(rig=rig)
         window.show()
         self.process_events()
         self.assertTrue(window.trigger_box.isHidden(), "no trigger input on this rig")
         self.assertFalse(window.ttl_box.isHidden())
-        self.assertEqual(window.ttl_box.text(), "Send TTL at start (20 ms)")
+        self.assertEqual(window.ttl_box.text(), "Send TTL at start (10 ms)")
         self.assertIn("Raise FIO5 with the first step", window.ttl_box.toolTip())
-        self.assertIn("hold it for 20 ms", window.ttl_box.toolTip())
+        self.assertIn("hold it for 10 ms", window.ttl_box.toolTip())
         table = window.rig_panel._table
         output_row = next(
             row for row in range(table.rowCount()) if table.item(row, 0).text() == "TTL output"
         )
         self.assertEqual(table.item(output_row, 1).text(), "output")
         self.assertEqual(table.item(output_row, 2).text(), "channel 5 (FIO5)")
-        self.assertEqual(table.item(output_row, 3).text(), "one pulse of 20 ms at the first trial")
+        self.assertEqual(table.item(output_row, 3).text(), "one pulse of 10 ms at the first trial")
         self.assertFalse(window.ttl_box.isChecked())
         self.assertFalse(window.send_ttl())
         window.ttl_box.setChecked(True)
@@ -591,7 +591,7 @@ class MainWindowTests(GuiTestCase):
         self.assertEqual(values, ["low", "high", "low", "low"])
         manifest = json.loads((status.run_directory / "manifest.json").read_text())
         self.assertTrue(manifest["send_ttl"])
-        self.assertEqual(manifest["rig_map"]["ttl_output"]["pulse_seconds"], 0.02)
+        self.assertEqual(manifest["rig_map"]["ttl_output"]["pulse_seconds"], 0.01)
         self.assertTrue(window.ttl_box.isEnabled())
         window.close()
 
@@ -633,11 +633,11 @@ class MainWindowTests(GuiTestCase):
         from sniffler.recipe import RigMap
 
         rig = RigMap(
-            RIG.labjack_serial, RIG.valves, RIG.mfcs, None, TtlOutputSettings(5, "pulse", 0.05)
+            RIG.labjack_serial, RIG.valves, RIG.mfcs, None, TtlOutputSettings(5, "pulse", 0.02)
         )
         window = self.window(rig=rig)
         window.ttl_box.setChecked(True)
-        window.editor.set_recipe(make_recipe(0.05))
+        window.editor.set_recipe(make_recipe(0.05))  # 0.02 s plus the 30 ms margin is not less
 
         window.start_run()
         self.process_events(0.1)
