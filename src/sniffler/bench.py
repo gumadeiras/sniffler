@@ -168,12 +168,15 @@ def check_mfcs(bench: Bench) -> Result:
 
 
 def check_safe(bench: Bench) -> Result:
-    """Every valve line reads low and every MFC setpoint reads zero."""
+    """Every valve line and the TTL output read low; every MFC setpoint reads zero."""
     lines: list[str] = []
     problems: list[str] = []
+    outputs = dict(bench.rig.valves)
+    if bench.rig.ttl_output is not None:
+        outputs["TTL output"] = bench.rig.ttl_output.channel
     try:
         with bench.open_labjack(bench.rig.labjack_serial) as session:
-            for name, channel in bench.rig.valves.items():
+            for name, channel in outputs.items():
                 _is_input, level = session.read_digital(channel)
                 lines.append(f"{name} (channel {channel}): {'high' if level else 'low'}")
                 if level:

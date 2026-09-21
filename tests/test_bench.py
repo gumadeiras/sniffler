@@ -53,6 +53,18 @@ class BenchTests(unittest.TestCase):
         self.assertIn("max=10.000 ms", text)
         self.assertEqual(milliseconds([]), "no values")
 
+    def test_safe_check_reads_the_ttl_output_with_the_valves(self) -> None:
+        self.settings = replace(self.settings, ttl_output=TtlOutputSettings(6))
+
+        result = run_checks(self.bench(), ["safe"])[0]
+        self.assertEqual(result.outcome, "pass", result.lines)
+        self.assertIn("TTL output (channel 6): low", result.lines)
+
+        self.fake.labjack.input_level = True
+        result = run_checks(self.bench(), ["safe"])[0]
+        self.assertEqual(result.outcome, "fail")
+        self.assertIn("TTL output is high", result.lines)
+
     def test_actuating_checks_are_skipped_without_the_flag(self) -> None:
         results = run_checks(self.bench(actuate=False), ["valves", "timing", "safe"])
 
