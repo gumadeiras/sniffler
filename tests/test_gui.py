@@ -1,5 +1,6 @@
 """GUI tests under the offscreen Qt platform: authoring, validation, and window close."""
 
+import csv
 import gc
 import json
 import os
@@ -20,7 +21,7 @@ except ImportError as error:  # pragma: no cover - depends on the platform libra
 else:
     IMPORT_ERROR = ""
 
-from sniffler.config import AlicatSettings, Settings, TriggerSettings
+from sniffler.config import AlicatSettings, Settings, TriggerSettings, TtlOutputSettings
 from sniffler.executor import Phase
 from sniffler.fakes import FakeRig
 from sniffler.recipe import Recipe, RigMap, Schedule, Step, Trial, rig_map_from_settings
@@ -538,6 +539,115 @@ class MainWindowTests(GuiTestCase):
         self.assertTrue(window.trigger_box.isEnabled())
         self.assertIn("s left", window.run_view.status_panel._time.text())
         window.close()
+
+    def test_ttl_output_is_offered_only_when_configured_and_rises_with_the_first_step(
+        self,
+    ) -> None:
+        from sniffler.recipe import RigMap
+
+        plain = self.window()
+        self.assertTrue(plain.ttl_box.isHidden())
+
+        rig = RigMap(
+            RIG.labjack_serial, RIG.valves, RIG.mfcs, None, TtlOutputSettings(5, "pulse", 0.02)
+        )
+        window = self.window(rig=rig)
+        window.show()
+        self.process_events()
+        self.assertTrue(window.trigger_box.isHidden(), "no trigger input on this rig")
+        self.assertFalse(window.ttl_box.isHidden())
+        self.assertEqual(window.ttl_box.text(), "Send TTL at start (20 ms)")
+        self.assertIn("Raise FIO5 with the first step", window.ttl_box.toolTip())
+        self.assertIn("hold it for 20 ms", window.ttl_box.toolTip())
+        table = window.rig_panel._table
+        output_row = next(
+            row for row in range(table.rowCount()) if table.item(row, 0).text() == "TTL output"
+        )
+        self.assertEqual(table.item(output_row, 1).text(), "output")
+        self.assertEqual(table.item(output_row, 2).text(), "channel 5 (FIO5)")
+        self.assertEqual(table.item(output_row, 3).text(), "one pulse of 20 ms at the first trial")
+        self.assertFalse(window.ttl_box.isChecked())
+        self.assertFalse(window.send_ttl())
+        window.ttl_box.setChecked(True)
+        self.assertTrue(self.store().value("send_ttl", type=bool))
+        self.assertTrue(window.send_ttl())
+        window.editor.set_recipe(make_recipe(0.05))
+
+        window.start_run()
+        self.wait_until(lambda: window.controller.is_running)
+        self.assertFalse(window.ttl_box.isEnabled())
+        self.wait_until(lambda: not window.controller.is_running)
+        self.process_events(0.2)
+        status = window.controller.executor.status
+        self.assertEqual(status.phase, Phase.DONE, status.message)
+        writes = self.rig.labjack.writes
+        self.assertEqual(writes[0][1], {5: False})
+        self.assertEqual(writes[1][1], {8: True, 9: False, 16: False, 5: True})
+        self.assertEqual(writes[-1][1], {8: False, 9: False, 16: True, 5: False})
+        with (status.run_directory / "events.csv").open(newline="") as handle:
+            values = [
+                row["value"] for row in csv.DictReader(handle) if row["event"] == "ttl_command"
+            ]
+        self.assertEqual(values, ["low", "high", "low", "low"])
+        manifest = json.loads((status.run_directory / "manifest.json").read_text())
+        self.assertTrue(manifest["send_ttl"])
+        self.assertEqual(manifest["rig_map"]["ttl_output"]["pulse_seconds"], 0.02)
+        self.assertTrue(window.ttl_box.isEnabled())
+        window.close()
+
+        again = self.window(rig=rig)
+        self.assertTrue(again.ttl_box.isChecked(), "restored from the last session")
+
+    def test_ttl_output_in_high_mode_names_the_mode_and_holds_the_line(self) -> None:
+        from sniffler.recipe import RigMap
+
+        rig = RigMap(RIG.labjack_serial, RIG.valves, RIG.mfcs, None, TtlOutputSettings(5, "high"))
+        window = self.window(rig=rig)
+        self.assertEqual(window.ttl_box.text(), "TTL high during the run")
+        self.assertIn("hold it until the end state", window.ttl_box.toolTip())
+        table = window.rig_panel._table
+        output_row = next(
+            row for row in range(table.rowCount()) if table.item(row, 0).text() == "TTL output"
+        )
+        self.assertEqual(
+            table.item(output_row, 3).text(), "high from the first trial to the end state"
+        )
+        window.ttl_box.setChecked(True)
+        window.editor.set_recipe(make_recipe(0.05))
+
+        window.start_run()
+        self.wait_until(lambda: not window.controller.is_running)
+        self.process_events(0.2)
+
+        status = window.controller.executor.status
+        self.assertEqual(status.phase, Phase.DONE, status.message)
+        with (status.run_directory / "events.csv").open(newline="") as handle:
+            values = [
+                row["value"] for row in csv.DictReader(handle) if row["event"] == "ttl_command"
+            ]
+        self.assertEqual(values, ["low", "high", "low"])
+        self.assertEqual(self.rig.labjack.writes[-1][1], {8: False, 9: False, 16: True, 5: False})
+        window.close()
+
+    def test_ttl_pulse_as_wide_as_the_first_step_is_refused_before_the_run(self) -> None:
+        from sniffler.recipe import RigMap
+
+        rig = RigMap(
+            RIG.labjack_serial, RIG.valves, RIG.mfcs, None, TtlOutputSettings(5, "pulse", 0.05)
+        )
+        window = self.window(rig=rig)
+        window.ttl_box.setChecked(True)
+        window.editor.set_recipe(make_recipe(0.05))
+
+        window.start_run()
+        self.process_events(0.1)
+
+        self.assertEqual(window.warnings[-1][0], "Cannot send the TTL pulse")
+        self.assertIn("shortest first step is 0.05 s", window.warnings[-1][1])
+        self.assertFalse(window.controller.is_running)
+        self.assertEqual(self.rig.labjack_opens, 0)
+        self.assertFalse(self.runs.exists())
+        self.assertTrue(window.start_button.isEnabled())
 
     def test_sync_pulses_show_as_a_count_and_as_timeline_marks(self) -> None:
         from sniffler.fakes import PulseTrain

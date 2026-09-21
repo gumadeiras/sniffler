@@ -9,7 +9,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QSettings, QSize, Qt, QTimer
+from PySide6.QtCore import QSettings, QSize, QTimer
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -17,14 +17,11 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QTableWidget,
-    QTableWidgetItem,
     QTabWidget,
     QToolBar,
     QVBoxLayout,
@@ -37,6 +34,7 @@ from sniffler.executor import Event, Phase, Sample, Status
 from sniffler.gui import theme
 from sniffler.gui.icons import icon
 from sniffler.gui.recipe_editor import RecipeEditor
+from sniffler.gui.rig_panel import RigPanel, pulse_text
 from sniffler.gui.run_view import RunController, RunView
 from sniffler.hardware import DeviceError
 from sniffler.recipe import (
@@ -46,87 +44,11 @@ from sniffler.recipe import (
     load_recipe,
     rig_map_from_settings,
     save_recipe,
+    start_pulse_problem,
 )
 from sniffler.runlog import LOCK_FILE_NAME, active_run
 
 RECIPE_FILTER = "Recipe files (*.json)"
-
-
-class RigPanel(QWidget):
-    """The name to channel map from lab.toml, read-only."""
-
-    def __init__(
-        self, rig: RigMap, runs_directory: Path | None = None, parent: QWidget | None = None
-    ) -> None:
-        super().__init__(parent)
-        self._table = QTableWidget(0, 4)
-        self._table.setHorizontalHeaderLabels(["Name", "Kind", "Hardware", "Limits"])
-        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self._table.verticalHeader().setVisible(False)
-        self._table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self._table.setWordWrap(True)
-        self.read_limits = QPushButton(icon("read-limits"), "Read device limits")
-        self.read_limits.setToolTip(
-            "Read the device maximum of every MFC. This command changes no output."
-        )
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(theme.MARGIN, theme.MARGIN, theme.MARGIN, theme.MARGIN)
-        layout.setSpacing(theme.GAP)
-        source = QLabel("The devices, read from lab.toml. Edit that file to change them.")
-        layout.addWidget(source)
-        layout.addWidget(self._table, stretch=1)
-        layout.addWidget(self.read_limits, alignment=Qt.AlignLeft)
-        if runs_directory is not None:
-            runs = QLabel(
-                f"Runs are saved in {runs_directory}. Each run gets its own new folder; "
-                "nothing is overwritten. Set [runs] directory in lab.toml to move them."
-            )
-            runs.setWordWrap(True)
-            runs.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            layout.addWidget(runs)
-        self.show_rig(rig)
-
-    def show_rig(self, rig: RigMap) -> None:
-        rows: list[tuple[str, str, str, str]] = []
-        for name, channel in rig.valves.items():
-            line = hardware.digital_channel_name(channel)
-            rows.append((name, "valve", f"channel {channel} ({line})", "—"))
-        if rig.trigger is not None:
-            trigger = rig.trigger
-            line = hardware.digital_channel_name(trigger.channel)
-            timeout = trigger.timeout_seconds
-            rows.append(
-                (
-                    "TTL trigger",
-                    "input",
-                    f"channel {trigger.channel} ({line})",
-                    "no time limit" if timeout is None else f"timeout {timeout:g} s",
-                )
-            )
-        for name, mfc in rig.mfcs.items():
-            limits = [f"minimum {mfc.minimum_flow:g}"]
-            if mfc.maximum_flow is not None:
-                limits.append(f"lab.toml maximum {mfc.maximum_flow:g}")
-            limits.append(
-                "device maximum not read yet"
-                if mfc.full_scale is None
-                else f"device maximum {mfc.full_scale:g}"
-            )
-            if mfc.allow_negative_flow:
-                limits.append("negative flow allowed")
-            rows.append(
-                (
-                    name,
-                    "MFC",
-                    f"{mfc.port}, unit {mfc.unit}",
-                    ", ".join(limits) + f" {mfc.flow_unit}",
-                )
-            )
-        self._table.setRowCount(len(rows))
-        for row, values in enumerate(rows):
-            for column, value in enumerate(values):
-                self._table.setItem(row, column, QTableWidgetItem(value))
-        self._table.resizeRowsToContents()
 
 
 class MainWindow(QMainWindow):
@@ -193,6 +115,24 @@ class MainWindow(QMainWindow):
             self.trigger_box.toggled.connect(
                 lambda checked: self._store.setValue("wait_for_trigger", checked)
             )
+        self.ttl_box = QCheckBox("Send TTL at start")
+        output = rig.ttl_output
+        if output is None:
+            self.ttl_box.hide()
+        else:
+            line = hardware.digital_channel_name(output.channel)
+            if output.holds_high:
+                self.ttl_box.setText("TTL high during the run")
+                hold = "until the end state"
+            else:
+                self.ttl_box.setText(f"Send TTL at start ({pulse_text(output.pulse_seconds)})")
+                hold = f"for {pulse_text(output.pulse_seconds)}"
+            self.ttl_box.setToolTip(
+                f"Raise {line} with the first step of the first trial and hold it {hold}. "
+                "The line, the mode, and the width are set in lab.toml; see Config."
+            )
+            self.ttl_box.setChecked(self._store.value("send_ttl", False, type=bool))
+            self.ttl_box.toggled.connect(lambda checked: self._store.setValue("send_ttl", checked))
         self.start_now_button = QPushButton("Start now")
         self.start_now_button.setObjectName("consequential")
         self.start_now_button.setToolTip("End the wait for the trigger and start the trials now.")
@@ -224,7 +164,12 @@ class MainWindow(QMainWindow):
         form.addRow("Recipe", self._recipe_summary)
         form.addRow("Seed", self._seed_label)
         form.addRow("Notes", self._notes)
-        form.addRow(self.trigger_box)
+        ttl = QHBoxLayout()
+        ttl.setSpacing(theme.SECTION_GAP)
+        ttl.addWidget(self.trigger_box)
+        ttl.addWidget(self.ttl_box)
+        ttl.addStretch(1)
+        form.addRow(ttl)
         buttons = QHBoxLayout()
         buttons.setSpacing(theme.GAP)
         buttons.addWidget(self.start_button)
@@ -484,6 +429,12 @@ class MainWindow(QMainWindow):
         if self.controller.is_running:
             return
         recipe = self.editor.recipe()
+        output = self._rig.ttl_output
+        if self.send_ttl() and output is not None and not output.holds_high:
+            problem = start_pulse_problem(recipe, output.pulse_seconds)
+            if problem is not None:
+                self._tell(self, "Cannot send the TTL pulse", problem)
+                return
         runs_directory = self._settings.runs_directory
         directory = active_run(runs_directory)
         if directory is not None:
@@ -509,13 +460,19 @@ class MainWindow(QMainWindow):
             runs_directory,
             self._notes.toPlainText(),
             wait_for_trigger=self._rig.trigger is not None and self.trigger_box.isChecked(),
+            send_ttl=self.send_ttl(),
             **self._factories,
         )
         self._tick.start()
 
+    def send_ttl(self) -> bool:
+        """Whether this run raises the TTL output with the first trial."""
+        return self._rig.ttl_output is not None and self.ttl_box.isChecked()
+
     def _set_running(self, running: bool) -> None:
         self.start_button.setEnabled(not running and not self.editor.problems())
         self.trigger_box.setEnabled(not running)
+        self.ttl_box.setEnabled(not running)
         self.rig_panel.read_limits.setEnabled(not running)  # the run holds the MFC ports
         self.start_now_button.setVisible(False)
         self.stop_button.setEnabled(running)

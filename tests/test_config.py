@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sniffler.config import ConfigError, TriggerSettings, load_settings
+from sniffler.config import ConfigError, TriggerSettings, TtlOutputSettings, load_settings
 
 
 class ConfigurationTests(unittest.TestCase):
@@ -137,6 +137,40 @@ class ConfigurationTests(unittest.TestCase):
                 self.load(f"[trigger]\nchannel = {channel}\n")
         with self.assertRaisesRegex(ConfigError, "timeout_seconds"):
             self.load("[trigger]\nchannel = 4\ntimeout_seconds = 0\n")
+
+    def test_loads_the_ttl_output_and_checks_its_channel(self) -> None:
+        settings = self.load(
+            "[valves]\nA = 8\n\n[trigger]\nchannel = 4\n\n[ttl_output]\nchannel = 5\n"
+        )
+
+        self.assertEqual(settings.ttl_output, TtlOutputSettings(5, "pulse", 0.005))
+        self.assertFalse(settings.ttl_output.holds_high)
+        self.assertIsNone(self.load("[labjack]\nserial = 1\n").ttl_output)
+        pulse = self.load("[ttl_output]\nchannel = 19\npulse_seconds = 0.05\n").ttl_output
+        self.assertEqual(pulse, TtlOutputSettings(19, "pulse", 0.05))
+        high = self.load('[ttl_output]\nchannel = 6\nmode = "high"\n').ttl_output
+        self.assertEqual(high, TtlOutputSettings(6, "high", 0.005))
+        self.assertTrue(high.holds_high)
+        with self.assertRaisesRegex(ConfigError, "Set ttl_output.channel"):
+            self.load('[ttl_output]\nmode = "high"\n')
+        with self.assertRaisesRegex(ConfigError, 'must be "pulse" or "high"'):
+            self.load('[ttl_output]\nchannel = 6\nmode = "level"\n')
+        with self.assertRaisesRegex(ConfigError, "pulse_seconds has no effect"):
+            self.load('[ttl_output]\nchannel = 6\nmode = "high"\npulse_seconds = 0.01\n')
+        for width in ("0", "-0.1", "inf"):
+            with self.assertRaisesRegex(ConfigError, "pulse_seconds must be finite"):
+                self.load(f"[ttl_output]\nchannel = 6\npulse_seconds = {width}\n")
+        with self.assertRaisesRegex(ConfigError, "also the valve 'A'"):
+            self.load("[valves]\nA = 8\n\n[ttl_output]\nchannel = 8\n")
+        with self.assertRaisesRegex(ConfigError, "also the trigger input"):
+            self.load("[trigger]\nchannel = 4\n\n[ttl_output]\nchannel = 4\n")
+        for channel in (3, 20):
+            with self.assertRaisesRegex(ConfigError, "4 through 19"):
+                self.load(f"[ttl_output]\nchannel = {channel}\n")
+        with self.assertRaisesRegex(ConfigError, "Unknown setting in \\[ttl_output\\]: width"):
+            self.load("[ttl_output]\nchannel = 5\nwidth = 1\n")
+        with self.assertRaisesRegex(ConfigError, "channel must be int"):
+            self.load('[ttl_output]\nchannel = "FIO5"\n')
 
     def test_example_uses_the_device_limit_by_default(self) -> None:
         example = Path(__file__).parents[1] / "lab.toml.example"

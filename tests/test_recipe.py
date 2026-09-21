@@ -26,6 +26,7 @@ from sniffler.recipe import (
     safe_state,
     save_recipe,
     setpoint_problem,
+    start_pulse_problem,
     validate_recipe,
 )
 
@@ -109,6 +110,20 @@ class RigMapTests(unittest.TestCase):
 class ValidationTests(unittest.TestCase):
     def test_accepts_a_complete_recipe(self) -> None:
         validate_recipe(make_recipe(), RIG)
+
+    def test_start_pulse_must_end_inside_the_first_step_of_any_first_trial(self) -> None:
+        recipe = make_recipe()  # first steps: odor 0.5 s, blank 1.0 s
+
+        self.assertIsNone(start_pulse_problem(recipe, 0.005))
+        self.assertIsNone(start_pulse_problem(recipe, 0.499))
+        self.assertIn("shortest first step is 0.5 s", start_pulse_problem(recipe, 0.5))
+        self.assertIn("greater than zero", start_pulse_problem(recipe, 0.0))
+        self.assertIn("greater than zero", start_pulse_problem(recipe, float("inf")))
+        self.assertIn("number of seconds", start_pulse_problem(recipe, "5 ms"))
+        self.assertIn("number of seconds", start_pulse_problem(recipe, True))
+        # A trial with a zero count cannot run first, so its short step does not count.
+        rested = make_recipe(schedule=Schedule({"odor": 0, "blank": 3}, "as-listed", 7))
+        self.assertIsNone(start_pulse_problem(rested, 0.9))
 
     def test_unknown_mfc_hint_quotes_a_name_with_a_space(self) -> None:
         from sniffler.recipe import _step_problems

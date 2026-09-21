@@ -24,6 +24,7 @@ from sniffler.recipe import (
     resolve_trial_order,
     resolved_duration_seconds,
     safe_state,
+    start_pulse_problem,
     validate_recipe,
 )
 from sniffler.runlog import (
@@ -143,6 +144,7 @@ class Executor:
         sample_interval_seconds: float = DEFAULT_SAMPLE_INTERVAL_SECONDS,
         clock: Callable[[], float] = time.perf_counter,
         wait_for_trigger: bool = False,
+        send_ttl: bool = False,
     ) -> None:
         self._recipe = recipe
         self._rig = rig
@@ -162,6 +164,8 @@ class Executor:
         self._abort = threading.Event()
         self._start_now = threading.Event()
         self._wait_for_trigger = wait_for_trigger
+        # Raise the TTL output with the first step; lab.toml says for how long.
+        self._send_ttl = send_ttl
         self._thread: threading.Thread | None = None
         self._log: RunLog | None = None
         self._started_at: float | None = None
@@ -224,6 +228,17 @@ class Executor:
                 "lab.toml has no [trigger] table, so the run cannot wait for a TTL trigger. "
                 "No hardware was used.",
             )
+        if self._send_ttl:
+            output = self._rig.ttl_output
+            problem = (
+                "lab.toml has no [ttl_output] table, so the run cannot send a TTL at start."
+                if output is None
+                else None
+                if output.holds_high
+                else start_pulse_problem(self._recipe, output.pulse_seconds)
+            )
+            if problem is not None:
+                return self._finish(Phase.FAILED, f"{problem} No hardware was used.")
 
         directory = new_run_directory(self._runs_directory, self._recipe.name)
         lock = RunLock(self._runs_directory, directory)
@@ -244,6 +259,7 @@ class Executor:
                     "planned_duration_seconds": resolved_duration_seconds(self._recipe, order),
                     "sample_interval_seconds": self._sample_interval,
                     "wait_for_trigger": self._wait_for_trigger,
+                    "send_ttl": self._send_ttl,
                     "recipe": self._recipe.to_dict(),
                     "rig_map": self._rig.to_dict(),
                 }
@@ -320,6 +336,10 @@ class Executor:
                 raise DeviceError(worker.error or "The MFCs are not ready.")
             self._started_at = self._clock()
             self._record("run_start", detail=f"planned order: {', '.join(order)}")
+            if self._send_ttl:
+                # A defined low before the TTL rises; before the counter arms, so a looped-back
+                # edge from this write is not counted.
+                self._write_lines(labjack, {}, {}, detail="low before the run", ttl=False)
             if self._rig.trigger is not None:
                 self._arm_counter(labjack)
             baseline = self._await_trigger(labjack, worker) if self._wait_for_trigger else 0
@@ -502,7 +522,9 @@ class Executor:
                     "trial_name": name,
                     "step_index": step_index,
                 }
-                self._apply_step(step, labjack, worker, context)
+                # The TTL output rises in the packet that switches the first valves.
+                first = self._send_ttl and trial_index == 0 and step_index == 0
+                rose = self._apply_step(step, labjack, worker, context, ttl=True if first else None)
                 self._publish(
                     step_index=step_index,
                     step_started_seconds=origin + cumulative,
@@ -510,6 +532,13 @@ class Executor:
                     valves=dict(step.valves),
                     setpoints=dict(step.setpoints),
                 )
+                output = self._rig.ttl_output
+                if first and output is not None and not output.holds_high:
+                    # A pulse: the width counts from the moment the high write returned.
+                    # In high mode the line falls with the end state instead.
+                    assert rose is not None
+                    self._wait_until(rose + output.pulse_seconds, worker)
+                    self._write_lines(labjack, {}, context, detail="start pulse", ttl=False)
                 cumulative += step.duration_seconds or 0.0
             self._wait_until(origin + cumulative, worker)
             self._record(
@@ -553,16 +582,22 @@ class Executor:
         context: dict[str, Any],
         *,
         detail: str = "",
-    ) -> None:
-        """Command every changed device. ``context`` holds the schedule fields of each row."""
+        ttl: bool | None = None,
+    ) -> float | None:
+        """Command every changed device. ``context`` holds the schedule fields of each row.
+
+        ``ttl`` drives the TTL output in the same packet as the valves. Return the run
+        seconds at which that packet returned, or None when no packet was sent.
+        """
         for name, value in step.setpoints.items():
             if self._last_setpoints.get(name) != value:
                 worker.command(name, value, context, detail)
         self._last_setpoints = dict(step.setpoints)
-        if step.valves != self._last_valves:
-            self._write_valves(labjack, step.valves, context, detail=detail)
+        if step.valves == self._last_valves and ttl is None:
+            return None
+        return self._write_lines(labjack, step.valves, context, detail=detail, ttl=ttl)
 
-    def _write_valves(
+    def _write_lines(
         self,
         labjack: Any,
         valves: dict[str, bool],
@@ -570,40 +605,51 @@ class Executor:
         *,
         detail: str = "",
         record_all: bool = False,
-    ) -> None:
-        """Write every valve in one transaction and record each changed valve."""
+        ttl: bool | None = None,
+    ) -> float:
+        """Write the valves, and the TTL output when ``ttl`` is given, in one transaction.
+
+        Each changed valve and the TTL edge get one row with the same times and count.
+        Return the run seconds at which the packet returned.
+        """
         channels = {self._rig.valves[name]: state for name, state in valves.items()}
+        if ttl is not None:
+            assert self._rig.ttl_output is not None
+            channels[self._rig.ttl_output.channel] = ttl
         sync = self._sync if self._sync is not None and self._sync.active else None
         commanded = self.elapsed_seconds()
         count = labjack.write_digital_lines(channels, read_counter=sync is not None)
         returned = self.elapsed_seconds()
-        wall_time = wall_time_now()
+        row = {
+            "returned_run_seconds": returned,
+            "commanded_run_seconds": commanded,
+            "returned_wall_time": wall_time_now(),
+            "sync_count": count,
+            "detail": detail,
+            **context,
+        }
         previous = self._last_valves
-        self._last_valves = dict(valves)
+        if valves:
+            self._last_valves = dict(valves)
         for name, state in valves.items():
             if not record_all and previous is not None and previous.get(name) == state:
                 continue
-            self._record(
-                "valve_command",
-                returned_run_seconds=returned,
-                commanded_run_seconds=commanded,
-                device=name,
-                value="open" if state else "closed",
-                returned_wall_time=wall_time,
-                sync_count=count,
-                detail=detail,
-                **context,
-            )
+            self._record("valve_command", device=name, value="open" if state else "closed", **row)
+        if ttl is not None:
+            line = hardware.digital_channel_name(self._rig.ttl_output.channel)
+            self._record("ttl_command", device=line, value="high" if ttl else "low", **row)
         if sync is not None and count is not None:
             sync.observe(count, returned)
+        return returned
 
     def _apply_final_state(
         self, labjack: Any, worker: MfcWorker, state: Step, event: str
     ) -> list[str]:
         """Apply a final state to every device. Return the problems that remain."""
         problems: list[str] = []
+        ttl = False if self._send_ttl else None  # low whenever this run raised it
         try:
-            self._write_valves(labjack, state.valves, {}, detail=event, record_all=True)
+            self._write_lines(labjack, state.valves, {}, detail=event, record_all=True, ttl=ttl)
         except DeviceError as error:
             problems.append(str(error))
         worker.finish(state.setpoints, event)

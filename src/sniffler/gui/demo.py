@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings
 
-from sniffler.config import AlicatSettings, Settings, TriggerSettings
+from sniffler.config import AlicatSettings, Settings, TriggerSettings, TtlOutputSettings
 from sniffler.fakes import FakeRig, PulseTrain
 from sniffler.gui.app import MainWindow
 from sniffler.recipe import Recipe, Schedule, Step, Trial, rig_map_from_settings
@@ -38,6 +38,7 @@ def demo_settings(runs_directory: Path = RUNS_DIRECTORY) -> Settings:
         valves=dict(VALVES),
         runs_directory=runs_directory,
         trigger=TriggerSettings(channel=4),
+        ttl_output=TtlOutputSettings(channel=5),
     )
 
 

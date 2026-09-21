@@ -81,6 +81,7 @@ class RunController(QObject):
         runs_directory: Path,
         operator_notes: str,
         wait_for_trigger: bool = False,
+        send_ttl: bool = False,
         **factories: Callable[..., Any],
     ) -> None:
         if self.is_running:
@@ -93,6 +94,7 @@ class RunController(QObject):
             runs_directory,
             operator_notes=operator_notes,
             wait_for_trigger=wait_for_trigger,
+            send_ttl=send_ttl,
             on_status=self._statuses.put,
             on_sample=self._samples.put,
             on_event=self._events.put,  # a queue put only; nothing else may run here

@@ -38,7 +38,9 @@ Two programs share one hardware layer:
 - Keep hardware changes explicit. Do not change an output as part of a status command. A
   digital read never changes a line direction. The executor enables the pulse counter on the
   trigger line when a run arms and restores the U3 configuration on every exit path; both
-  are logged.
+  are logged. The TTL output rises in the same transaction as the first valves, falls after
+  the configured width or with the end state, and is driven low when the run arms and in every
+  final state; each edge is logged.
 - Refuse writes when units, safe ranges, channel mode, or controller mode are not valid. The
   Alicat setpoint-source guard (source `U`) stays; do not weaken it to make a device work.
 - State when a failed write might have changed physical hardware.

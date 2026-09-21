@@ -4,11 +4,17 @@ import json
 import math
 import random
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from sniffler.config import AlicatSettings, ConfigError, Settings, TriggerSettings
+from sniffler.config import (
+    AlicatSettings,
+    ConfigError,
+    Settings,
+    TriggerSettings,
+    TtlOutputSettings,
+)
 from sniffler.hardware import normalize_alicat_flow
 
 RECIPE_FORMAT = "sniffler-recipe/1"
@@ -58,6 +64,7 @@ class RigMap:
     valves: dict[str, int]
     mfcs: dict[str, MfcMap]
     trigger: TriggerSettings | None = None
+    ttl_output: TtlOutputSettings | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -65,6 +72,7 @@ class RigMap:
             "valves": dict(self.valves),
             "mfcs": {name: mfc.to_dict() for name, mfc in self.mfcs.items()},
             "trigger": None if self.trigger is None else self.trigger.to_dict(),
+            "ttl_output": None if self.ttl_output is None else self.ttl_output.to_dict(),
         }
 
     def with_full_scale(self, name: str, full_scale: float, flow_unit: str) -> "RigMap":
@@ -74,7 +82,7 @@ class RigMap:
         mfcs[name] = MfcMap(
             **{**current.__dict__, "full_scale": full_scale, "flow_unit": flow_unit}
         )
-        return RigMap(self.labjack_serial, dict(self.valves), mfcs, self.trigger)
+        return replace(self, mfcs=mfcs)
 
 
 def _mfc_map(name: str, alicat: AlicatSettings) -> MfcMap:
@@ -104,7 +112,9 @@ def rig_map_from_settings(settings: Settings) -> RigMap:
         for name, alicat in settings.alicats.items()
         if not (name == "default" and alicat.port is None)
     }
-    return RigMap(settings.labjack_serial, dict(settings.valves), mfcs, settings.trigger)
+    return RigMap(
+        settings.labjack_serial, dict(settings.valves), mfcs, settings.trigger, settings.ttl_output
+    )
 
 
 @dataclass(frozen=True)
@@ -225,6 +235,31 @@ def duration_problem(value: object) -> str | None:
         return "The duration must be a number of seconds."
     if not math.isfinite(value) or value <= 0:
         return "The duration must be greater than zero."
+    return None
+
+
+def start_pulse_problem(recipe: Recipe, seconds: object) -> str | None:
+    """Return why a start pulse of this width cannot go with this recipe, or None when it can.
+
+    The pulse rises with the first step of the first trial and falls inside that
+    step, so its width must be less than the first step of every trial that can
+    run first.
+    """
+    if isinstance(seconds, bool) or not isinstance(seconds, int | float):
+        return "The pulse width must be a number of seconds."
+    if not math.isfinite(seconds) or seconds <= 0:
+        return "The pulse width must be greater than zero."
+    first_steps = [
+        trial.steps[0].duration_seconds or 0.0
+        for trial in recipe.trials
+        if trial.steps and recipe.schedule.counts.get(trial.name, 0) > 0
+    ]
+    shortest = min(first_steps, default=None)
+    if shortest is not None and seconds >= shortest:
+        return (
+            f"The pulse width must be less than the first step of every trial; "
+            f"the shortest first step is {shortest:g} s."
+        )
     return None
 
 

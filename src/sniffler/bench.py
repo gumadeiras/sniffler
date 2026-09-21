@@ -13,7 +13,7 @@ import statistics
 import sys
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -59,7 +59,7 @@ class Bench:
 
     def run_rig(self, extra_valves: dict[str, int] | None = None) -> RigMap:
         valves = {**self.rig.valves, **(extra_valves or {})}
-        return RigMap(self.rig.labjack_serial, valves, self.rig.mfcs, self.rig.trigger)
+        return replace(self.rig, valves=valves)
 
 
 def milliseconds(values: Sequence[float]) -> str:
@@ -380,12 +380,7 @@ def check_gate(bench: Bench) -> Result:
     rig = _loopback_rig(bench)
     trigger = rig.trigger
     assert trigger is not None
-    timed = RigMap(
-        rig.labjack_serial,
-        rig.valves,
-        rig.mfcs,
-        type(trigger)(trigger.channel, GATE_TIMEOUT_SECONDS),
-    )
+    timed = replace(rig, trigger=replace(trigger, timeout_seconds=GATE_TIMEOUT_SECONDS))
     lines: list[str] = []
     # The rest state at arm switches the loop-back: one edge during the wait. The U3
     # counter counts falling edges, so that order is tried first.
@@ -462,6 +457,53 @@ def check_sync(bench: Bench) -> Result:
     return Result("sync", outcome, lines)
 
 
+def check_ttl(bench: Bench) -> Result:
+    """A run raises the TTL output in its first valve packet; the pulse width is measured.
+
+    With the TTL output wired to the trigger input, the counter sees the pulse once.
+    """
+    output = bench.rig.ttl_output
+    if output is None:
+        return Result("ttl", "skipped", ["lab.toml has no [ttl_output] table"])
+    valves = list(bench.rig.valves)
+    if not valves:
+        return Result("ttl", "skipped", ["lab.toml names no valve"])
+    recipe = _pulse_recipe(
+        bench.rig,
+        valves=valves[:1],
+        pulse_seconds=PULSE_SECONDS,
+        pulses=1,
+        lead_seconds=LEAD_SECONDS,
+        count=1,
+    )
+    status = _run(bench, recipe, bench.rig, send_ttl=True)
+    lines = [f"run directory: {status.run_directory}", status.message]
+    if status.phase is not Phase.DONE:
+        return Result("ttl", "blocked" if "setpoint" in status.message else "fail", lines)
+    rows = events_of(status)
+    edges = [row for row in rows if row["event"] == "ttl_command" and row["value"] != "low"]
+    lows = [row for row in rows if row["event"] == "ttl_command" and row["value"] == "low"]
+    if len(edges) != 1 or len(lows) < 2:
+        lines.append(f"expected one high edge and its low edges, got {len(edges)} and {len(lows)}")
+        return Result("ttl", "fail", lines)
+    high, low = edges[0], lows[1]  # lows[0] is the defined low before the run
+    first_valve = next(
+        row for row in rows if row["event"] == "valve_command" and row["step_index"] == "0"
+    )
+    same_packet = high["returned_run_seconds"] == first_valve["returned_run_seconds"]
+    lines.append(f"rose with the first valve command: {same_packet}")
+    width = _seconds(low, "returned_run_seconds") - _seconds(high, "returned_run_seconds")
+    if output.holds_high:
+        lines.append(f"mode high: fell with the {low['detail']} after {width * 1000:.1f} ms")
+    else:
+        requested = output.pulse_seconds * 1000
+        lines.append(f"pulse width: requested {requested:.1f} ms, measured {width * 1000:.1f} ms")
+    if bench.rig.trigger is not None:
+        marks = sum(row["event"] == "sync_pulse" for row in rows)
+        lines.append(f"pulses the counter saw: {marks} (1 when the output feeds the trigger input)")
+    return Result("ttl", "pass" if same_packet else "fail", lines)
+
+
 CHECKS: dict[str, tuple[Callable[[Bench], Result], bool]] = {
     "drivers": (check_drivers, False),
     "ports": (check_ports, False),
@@ -471,6 +513,7 @@ CHECKS: dict[str, tuple[Callable[[Bench], Result], bool]] = {
     "trigger": (check_trigger, True),
     "gate": (check_gate, True),
     "sync": (check_sync, True),
+    "ttl": (check_ttl, True),
     "safe": (check_safe, False),
 }
 
@@ -489,9 +532,12 @@ def run_checks(bench: Bench, names: Sequence[str]) -> list[Result]:
 def build_bench(settings: Settings, actuate: bool, loopback: int | None, no_mfc: bool) -> Bench:
     rig = rig_map_from_settings(settings)
     if no_mfc:
-        rig = RigMap(rig.labjack_serial, rig.valves, {}, rig.trigger)
+        rig = replace(rig, mfcs={})
     if loopback is not None:
-        taken = {*rig.valves.values(), *(() if rig.trigger is None else (rig.trigger.channel,))}
+        taken = {*rig.valves.values()}
+        for line in (rig.trigger, rig.ttl_output):
+            if line is not None:
+                taken.add(line.channel)
         if loopback in taken or loopback not in range(4, 20):
             raise ConfigError("--loopback must be a free digital channel from 4 through 19.")
     return Bench(settings, rig, actuate=actuate, loopback=loopback)

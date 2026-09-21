@@ -168,6 +168,20 @@ channel = 4
 # timeout_seconds = 300  # optional limit for the wait at run start
 ```
 
+To send a TTL to a recording system when the trials start, name the output
+line in an optional `[ttl_output]` table. Any spare digital line from channel
+4 to 19 works; it must not be a valve channel or the trigger input. The line
+goes high with the first step of the first trial. In `pulse` mode, the
+default, it falls after `pulse_seconds` (default 0.005). In `high` mode it
+stays high until the end state; `pulse_seconds` is refused in that mode.
+
+```toml
+[ttl_output]
+channel = 5
+mode = "pulse"          # or "high": stays high until the end state
+pulse_seconds = 0.005
+```
+
 Run directories are written to `runs` next to `lab.toml`. Set another
 location with an optional `[runs]` table. A relative path is next to
 `lab.toml`; an absolute path, or one that starts with `~`, is used as written.
@@ -416,6 +430,33 @@ The U3 counter increments on one edge polarity (falling, according to the
 LabJackPython examples; confirm on the bench). For a pulse that only shifts
 the mark by the pulse width.
 
+### The TTL output
+
+When `lab.toml` has a `[ttl_output]` table, the *Run* tab offers a checkbox
+and the *Config* tab shows the line, the mode, and the width. In `pulse` mode
+the box reads *Send TTL at start* with the width; in `high` mode it reads
+*TTL high during the run*. With the box checked, the run drives the line low
+when it arms, before the counter is enabled, so the TTL starts from a defined
+level. The line goes high in the same LabJack transaction as the valves of the
+first step of the first trial, so the TTL and the first valve switch are
+simultaneous in hardware. With *Wait for TTL* also checked, that moment is the
+trigger time.
+
+In `pulse` mode the line goes low again after `pulse_seconds`, counted from
+the moment the high write returned, as one extra command inside the first
+step. The width must be less than the first step of every trial that can run
+first; *Start run* refuses a longer pulse before the run begins. In `high`
+mode the line stays high through the trials and falls with the end state. In
+both modes the end state, the all-off state, and *Shut down the rig* drive the
+line low. The checkbox is remembered between sessions; the manifest records
+`send_ttl` and, in the rig map, the line, the mode, and the width.
+
+Each edge is a `ttl_command` row in `events.csv` with the line name, `high`
+or `low`, the commanded and returned times, and the sync count. The width
+jitter is one USB round trip, a few milliseconds; the bench `ttl` check
+measures it. If the output is wired to the trigger input, the TTL also counts
+as a sync pulse.
+
 ### Run directories
 
 Each run writes one directory under `runs`, named by the start time and the
@@ -426,7 +467,8 @@ recipe name:
   the operator notes, and the outcome.
 - `events.csv`: every valve and MFC command, trial boundaries, stop and abort
   requests, errors, the counter enable and restore, the trigger wait and its
-  end, every sync pulse, and the end state or the all-off state. The time columns are seconds since the run started, which is
+  end, every sync pulse, each edge of the TTL output (`ttl_command`), and
+  the end state or the all-off state. The time columns are seconds since the run started, which is
   the moment the devices were ready. `returned_run_seconds` is when the command
   returned from the device. `commanded_run_seconds` is when it was sent.
   `scheduled_run_seconds` is the planned time. `sync_count` is the pulse count
@@ -459,6 +501,7 @@ all of them, and prints a pass, fail, blocked, or skipped line with its numbers:
 uv run sniffler-bench                      # read-only: drivers, ports, mfcs, safe
 uv run sniffler-bench valves timing --actuate
 uv run sniffler-bench trigger gate sync --actuate --loopback 5
+uv run sniffler-bench ttl --actuate
 uv run sniffler-bench timing --actuate --no-mfc
 ```
 
@@ -467,7 +510,12 @@ configuration needs `--actuate` and ends in the safe state. `--loopback` names a
 spare digital output wired to the trigger input, so the script can make its own
 pulses: `trigger` finds which edge the counter counts and confirms the
 configuration is restored, `gate` measures the time from the edge to the start
-of the trial schedule, and `sync` measures the lag of each sync mark. `--no-mfc`
+of the trial schedule, and `sync` measures the lag of each sync mark.
+`ttl` runs one short recipe with the TTL output and reports the measured
+width, or in `high` mode the fall with the end state, whether the line rose in
+the first valve packet, and, when the `[ttl_output]` line is wired to the
+trigger input, that the counter saw it once.
+`--no-mfc`
 runs the executor checks without the MFCs while their setpoint source is not
 `U`. The timing, gate, and sync checks drive the same executor as the window;
 their run directories are written under `runs` and named in the output.

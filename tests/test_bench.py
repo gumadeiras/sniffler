@@ -4,11 +4,18 @@ import contextlib
 import io
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
 from sniffler.bench import Bench, build_bench, main, milliseconds, run_checks
-from sniffler.config import AlicatSettings, ConfigError, Settings, TriggerSettings
+from sniffler.config import (
+    AlicatSettings,
+    ConfigError,
+    Settings,
+    TriggerSettings,
+    TtlOutputSettings,
+)
 from sniffler.fakes import FakeRig
 from sniffler.recipe import rig_map_from_settings
 
@@ -126,11 +133,49 @@ class BenchTests(unittest.TestCase):
         self.assertEqual(result.outcome, "pass", result.lines)
         self.assertIn("loop-back edges written: 10; sync marks recorded: 4", result.lines)
 
+    def test_ttl_check_measures_the_width_and_counts_the_pulse(self) -> None:
+        self.settings = replace(self.settings, ttl_output=TtlOutputSettings(6, "pulse", 0.01))
+        # The counter sees the pulse on the read in the packet that ends it.
+        self.fake.labjack.counts = [0, 1]
+
+        with patch("sniffler.bench.LEAD_SECONDS", 0.05):
+            result = run_checks(self.bench(), ["ttl"])[0]
+
+        self.assertEqual(result.outcome, "pass", result.lines)
+        self.assertIn("rose with the first valve command: True", result.lines)
+        self.assertTrue(
+            any(line.startswith("pulse width: requested 10.0 ms") for line in result.lines)
+        )
+        self.assertTrue(any(line.startswith("pulses the counter saw: 1") for line in result.lines))
+        self.assertEqual(self.fake.labjack.writes[-1][1], {8: False, 9: False, 6: False})
+
+    def test_ttl_check_in_high_mode_reports_the_fall_with_the_end_state(self) -> None:
+        self.settings = replace(self.settings, ttl_output=TtlOutputSettings(6, "high"))
+
+        with (
+            patch("sniffler.bench.LEAD_SECONDS", 0.05),
+            patch("sniffler.bench.PULSE_SECONDS", 0.02),
+        ):
+            result = run_checks(self.bench(), ["ttl"])[0]
+
+        self.assertEqual(result.outcome, "pass", result.lines)
+        self.assertTrue(
+            any(line.startswith("mode high: fell with the shutdown_state") for line in result.lines)
+        )
+
+    def test_ttl_check_is_skipped_without_the_table(self) -> None:
+        result = run_checks(self.bench(), ["ttl"])[0]
+
+        self.assertEqual(result.outcome, "skipped")
+        self.assertIn("[ttl_output]", result.lines[0])
+
     def test_loopback_must_be_a_free_channel(self) -> None:
         with self.assertRaisesRegex(ConfigError, "free digital channel"):
             build_bench(self.settings, True, 8, False)
         with self.assertRaisesRegex(ConfigError, "free digital channel"):
             build_bench(self.settings, True, 4, False)
+        with self.assertRaisesRegex(ConfigError, "free digital channel"):
+            build_bench(replace(self.settings, ttl_output=TtlOutputSettings(6)), True, 6, False)
         rig = build_bench(self.settings, True, None, True).rig
         self.assertEqual(rig.mfcs, {})
         self.assertEqual(rig.valves, rig_map_from_settings(self.settings).valves)

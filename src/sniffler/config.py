@@ -43,6 +43,30 @@ class TriggerSettings:
         return {"channel": self.channel, "timeout_seconds": self.timeout_seconds}
 
 
+TTL_MODES = ("pulse", "high")
+DEFAULT_PULSE_SECONDS = 0.005
+
+
+@dataclass(frozen=True)
+class TtlOutputSettings:
+    """The digital line that goes high with the first trial, on request.
+
+    In ``pulse`` mode it falls after ``pulse_seconds``; in ``high`` mode it
+    stays high until the end state.
+    """
+
+    channel: int
+    mode: str = "pulse"
+    pulse_seconds: float = DEFAULT_PULSE_SECONDS
+
+    @property
+    def holds_high(self) -> bool:
+        return self.mode == "high"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"channel": self.channel, "mode": self.mode, "pulse_seconds": self.pulse_seconds}
+
+
 @dataclass(frozen=True)
 class Settings:
     """Settings that differ between computers or connected devices."""
@@ -54,6 +78,7 @@ class Settings:
     valves: dict[str, int] = field(default_factory=dict)
     runs_directory: Path = Path("runs")
     trigger: TriggerSettings | None = None
+    ttl_output: TtlOutputSettings | None = None
 
 
 def _table(data: dict[str, Any], key: str) -> dict[str, Any]:
@@ -167,6 +192,22 @@ def _parse_trigger(trigger: dict[str, Any]) -> TriggerSettings | None:
     )
 
 
+def _parse_ttl_output(table: dict[str, Any]) -> TtlOutputSettings | None:
+    if not table:
+        return None
+    _reject_unknown(table, {"channel", "mode", "pulse_seconds"}, "[ttl_output]")
+    if "channel" not in table:
+        raise ConfigError("Set ttl_output.channel to the digital channel that sends the TTL.")
+    mode = _value(table, "mode", str, "pulse")
+    if mode == "high" and "pulse_seconds" in table:
+        raise ConfigError('ttl_output.pulse_seconds has no effect when mode is "high"; remove it.')
+    return TtlOutputSettings(
+        channel=_value(table, "channel", int, None),
+        mode=mode,
+        pulse_seconds=_value(table, "pulse_seconds", float, DEFAULT_PULSE_SECONDS),
+    )
+
+
 def load_settings(path: Path) -> Settings:
     """Load settings, or return defaults when the file does not exist."""
     if not path.exists():
@@ -177,7 +218,9 @@ def load_settings(path: Path) -> Settings:
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise ConfigError(f"Cannot read {path}: {error}") from error
 
-    _reject_unknown(data, {"labjack", "alicat", "valves", "runs", "trigger"}, "configuration")
+    _reject_unknown(
+        data, {"labjack", "alicat", "valves", "runs", "trigger", "ttl_output"}, "configuration"
+    )
     labjack = _table(data, "labjack")
     alicat = _table(data, "alicat")
     runs = _table(data, "runs")
@@ -194,6 +237,7 @@ def load_settings(path: Path) -> Settings:
         # with ~, is used as written.
         runs_directory=path.parent / Path(runs_directory).expanduser(),
         trigger=_parse_trigger(_table(data, "trigger")),
+        ttl_output=_parse_ttl_output(_table(data, "ttl_output")),
     )
     _validate(settings)
     return settings
@@ -214,6 +258,19 @@ def _validate(settings: Settings) -> None:
         timeout = trigger.timeout_seconds
         if timeout is not None and (not math.isfinite(timeout) or timeout <= 0):
             raise ConfigError("trigger.timeout_seconds must be finite and greater than zero.")
+    output = settings.ttl_output
+    if output is not None:
+        if output.channel not in DIGITAL_OUTPUT_CHANNELS:
+            raise ConfigError("ttl_output.channel must be a digital channel from 4 through 19.")
+        used = [name for name, channel in settings.valves.items() if channel == output.channel]
+        if used:
+            raise ConfigError(f"ttl_output.channel {output.channel} is also the valve {used[0]!r}.")
+        if trigger is not None and trigger.channel == output.channel:
+            raise ConfigError(f"ttl_output.channel {output.channel} is also the trigger input.")
+        if output.mode not in TTL_MODES:
+            raise ConfigError('ttl_output.mode must be "pulse" or "high".')
+        if not math.isfinite(output.pulse_seconds) or output.pulse_seconds <= 0:
+            raise ConfigError("ttl_output.pulse_seconds must be finite and greater than zero.")
     for name, alicat in settings.alicats.items():
         location = "alicat" if name == "default" else f"alicat.{name}"
         if alicat.port is not None and not alicat.port.strip():

@@ -45,3 +45,11 @@ D = 11
 # [trigger]
 # channel = 4
 # timeout_seconds = 300    # optional limit for the wait at run start
+
+# Optional TTL output to the recording system, on request from the Run tab.
+# The line goes high with the first trial. Any spare digital line from channel
+# 4 to 19 that is not a valve or the trigger input.
+# [ttl_output]
+# channel = 5
+# mode = "pulse"           # or "high": stays high until the end state
+# pulse_seconds = 0.005    # pulse mode only

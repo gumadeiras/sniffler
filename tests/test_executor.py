@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sniffler.config import TriggerSettings
+from sniffler.config import TriggerSettings, TtlOutputSettings
 from sniffler.executor import Event, Executor, Phase, Sample, Status
 from sniffler.fakes import FakeRig, PulseTrain
 from sniffler.hardware import DeviceError
@@ -38,6 +38,16 @@ def step(duration: float, odor_1: bool = False, odor_2: bool = False, flow: floa
 
 
 RIG_WITH_TRIGGER = RigMap(RIG.labjack_serial, RIG.valves, RIG.mfcs, TriggerSettings(4))
+RIG_WITH_TTL = RigMap(
+    RIG.labjack_serial,
+    RIG.valves,
+    RIG.mfcs,
+    TriggerSettings(4),
+    TtlOutputSettings(5, "pulse", 0.03),
+)
+RIG_WITH_TTL_HIGH = RigMap(
+    RIG.labjack_serial, RIG.valves, RIG.mfcs, TriggerSettings(4), TtlOutputSettings(5, "high")
+)
 
 SHUTDOWN = Step(
     None, {"odor-1": False, "odor-2": False, "final": True}, {"mfc-500": 50.0, "mfc-2000": 0.0}
@@ -657,6 +667,108 @@ class TriggerTests(ExecutorTestCase):
         manifest = self.manifest(status)
         self.assertFalse(manifest["wait_for_trigger"])
         self.assertIsNone(manifest["sync_pulses"])
+
+
+class StartPulseTests(ExecutorTestCase):
+    def ttl_rows(self, status: Status) -> list[dict[str, str]]:
+        return [event for event in self.events(status) if event["event"] == "ttl_command"]
+
+    def test_pulse_rises_with_the_first_valves_and_falls_after_the_width(self) -> None:
+        status = self.executor(recipe=make_recipe(0.1), rig=RIG_WITH_TTL, send_ttl=True).run()
+
+        self.assertEqual(status.phase, Phase.DONE, status.message)
+        writes = self.rig.labjack.writes
+        self.assertEqual(writes[0][1], {5: False}, "a defined low before the run")
+        self.assertTrue(writes[1][1][5], "high in the packet that switches the first valves")
+        self.assertTrue({8, 9} & writes[1][1].keys())
+        events = self.events(status)
+        kinds = [event["event"] for event in events]
+        self.assertLess(kinds.index("ttl_command"), kinds.index("counter_enabled"))
+        rows = self.ttl_rows(status)
+        self.assertEqual([row["value"] for row in rows], ["low", "high", "low", "low"])
+        self.assertEqual([row["device"] for row in rows], ["FIO5"] * 4)
+        self.assertEqual(rows[0]["detail"], "low before the run")
+        rise, fall = rows[1], rows[2]
+        first_valve = next(
+            e for e in events if e["event"] == "valve_command" and e["step_index"] == "0"
+        )
+        self.assertEqual(rise["returned_run_seconds"], first_valve["returned_run_seconds"])
+        self.assertEqual(rise["commanded_run_seconds"], first_valve["commanded_run_seconds"])
+        self.assertEqual((rise["trial_index"], rise["step_index"]), ("0", "0"))
+        self.assertEqual(rise["scheduled_run_seconds"], first_valve["scheduled_run_seconds"])
+        self.assertEqual(rise["sync_count"], "0", "the packet read the counter")
+        self.assertEqual(fall["detail"], "start pulse")
+        self.assertEqual((fall["trial_index"], fall["step_index"]), ("0", "0"))
+        width = float(fall["returned_run_seconds"]) - float(rise["returned_run_seconds"])
+        self.assertGreaterEqual(width, 0.03)
+        self.assertLess(width, 0.06)
+        second = next(e for e in events if e["event"] == "valve_command" and e["step_index"] == "1")
+        self.assertLess(float(fall["returned_run_seconds"]), float(second["commanded_run_seconds"]))
+        self.assertEqual(rows[3]["detail"], "shutdown_state")
+        self.assertEqual(self.final_valves(), {8: False, 9: False, 16: True, 5: False})
+        manifest = self.manifest(status)
+        self.assertTrue(manifest["send_ttl"])
+        self.assertEqual(
+            manifest["rig_map"]["ttl_output"],
+            {"channel": 5, "mode": "pulse", "pulse_seconds": 0.03},
+        )
+
+    def test_high_mode_holds_the_line_until_the_end_state(self) -> None:
+        status = self.executor(recipe=make_recipe(0.05), rig=RIG_WITH_TTL_HIGH, send_ttl=True).run()
+
+        self.assertEqual(status.phase, Phase.DONE, status.message)
+        rows = self.ttl_rows(status)
+        self.assertEqual([row["value"] for row in rows], ["low", "high", "low"])
+        self.assertEqual(rows[1]["step_index"], "0")
+        self.assertEqual(rows[2]["detail"], "shutdown_state")
+        events = self.events(status)
+        kinds = [event["event"] for event in events]
+        last_trial_end = len(kinds) - 1 - kinds[::-1].index("trial_end")
+        self.assertGreater(events.index(rows[2]), last_trial_end, "low only after the last trial")
+        held = [states for _time, states in self.rig.labjack.writes if 5 in states]
+        self.assertEqual([states[5] for states in held], [False, True, False])
+        self.assertEqual(self.final_valves(), {8: False, 9: False, 16: True, 5: False})
+
+    def test_abort_during_the_pulse_forces_the_line_low_with_the_safe_state(self) -> None:
+        rig = RigMap(
+            RIG.labjack_serial, RIG.valves, RIG.mfcs, None, TtlOutputSettings(5, "pulse", 0.5)
+        )
+        executor = self.executor(recipe=make_recipe(1.0), rig=rig, send_ttl=True)
+        executor.start()
+        self.wait_for(lambda: executor.status.step_index == 0)
+        executor.abort()
+        executor.join(5.0)
+
+        status = executor.status
+        self.assertEqual(status.phase, Phase.ABORTED, status.message)
+        rows = self.ttl_rows(status)
+        self.assertEqual([row["value"] for row in rows], ["low", "high", "low"])
+        self.assertEqual(rows[-1]["detail"], "safe_state")
+        self.assertEqual(self.final_valves(), {8: False, 9: False, 16: False, 5: False})
+
+    def test_a_run_without_the_pulse_never_touches_the_line(self) -> None:
+        status = self.executor(rig=RIG_WITH_TTL).run()
+
+        self.assertEqual(status.phase, Phase.DONE, status.message)
+        self.assertTrue(all(5 not in states for _time, states in self.rig.labjack.writes))
+        self.assertEqual(self.ttl_rows(status), [])
+        self.assertFalse(self.manifest(status)["send_ttl"])
+
+    def test_pulse_without_a_ttl_output_table_is_refused_before_hardware(self) -> None:
+        status = self.executor(rig=RIG, send_ttl=True).run()
+
+        self.assertEqual(status.phase, Phase.FAILED)
+        self.assertIn("no [ttl_output] table", status.message)
+        self.assertEqual(self.rig.labjack_opens, 0)
+        self.assertFalse(self.runs.exists())
+
+    def test_pulse_as_wide_as_the_first_step_is_refused_before_hardware(self) -> None:
+        status = self.executor(rig=RIG_WITH_TTL, send_ttl=True).run()  # steps of 0.03 s
+
+        self.assertEqual(status.phase, Phase.FAILED)
+        self.assertIn("shortest first step is 0.03 s", status.message)
+        self.assertEqual(self.rig.labjack_opens, 0)
+        self.assertFalse(self.runs.exists())
 
 
 class RecordFailureTests(ExecutorTestCase):
