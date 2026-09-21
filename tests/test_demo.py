@@ -57,6 +57,13 @@ class DemoTests(unittest.TestCase):
         self.assertEqual(recipe_problems(recipe, rig), [])
         self.assertEqual(recipe.schedule.interleave, "blank")
         self.assertEqual(recipe.schedule.run_counts()["blank"], 6, "one blank after each trial")
+        blank = recipe.trial("blank")
+        self.assertFalse(any(any(step.valves.values()) for step in blank.steps))
+        self.assertEqual(
+            [step.setpoints for step in blank.steps],
+            [recipe.trial("odor A").steps[0].setpoints],
+            "the blank carries the flows of an odor trial, so only the valves differ",
+        )
         mixture = recipe.trial("mixture A + B")
         together = [step for step in mixture.steps if sum(step.valves.values()) == 2]
         self.assertEqual(len(together), 3, "three pulses open valve A and valve B together")

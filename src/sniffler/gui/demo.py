@@ -68,7 +68,8 @@ def demo_recipe() -> Recipe:
             _odor_trial("odor A", "valve A"),
             _odor_trial("odor B", "valve B"),
             _odor_trial("mixture A + B", "valve A", "valve B"),
-            Trial("blank", (_step(3.0, odor=0.0),)),
+            # Same flows as an odor trial, no valve open: the odor line carries clean air.
+            Trial("blank", (_step(3.0),)),
         ),
         schedule=Schedule({"odor A": 2, "odor B": 2, "mixture A + B": 2}, interleave="blank"),
         shutdown=_step(None, odor=0.0),
