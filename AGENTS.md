@@ -49,7 +49,7 @@ Two programs share one hardware layer:
   read-only and never writes `lab.toml`. Refuse a recipe that names an unknown device before
   any hardware command.
 - The safe state is all valves closed and every MFC setpoint zero. It is not configurable. Abort,
-  any error, and closing the window during a run apply it; *Shut down the rig* in the tab bar
+  any error, and closing the window during a run apply it; *Shut down the rig* in the toolbar
   applies it outside a run through `executor.apply_safe_state`, with no run log. Normal end and
   Stop apply the recipe shutdown state.
 - The log records when each command returned, not when it was scheduled. Every row is flushed

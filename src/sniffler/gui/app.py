@@ -9,7 +9,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QSettings, QSize, Qt, QTimer
+from PySide6.QtCore import QSettings, QSize, QTimer
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QStyle,
+    QSizePolicy,
     QTabWidget,
     QToolBar,
     QVBoxLayout,
@@ -140,7 +140,7 @@ class MainWindow(QMainWindow):
         self.start_now_button.setToolTip("End the wait for the trigger and start the trials now.")
         self.start_now_button.hide()
         self.shutdown_button = QPushButton("Shut down the rig")
-        self.shutdown_button.setObjectName("tabCorner")
+        self.shutdown_button.setObjectName("consequential")
         self.shutdown_button.setToolTip(
             "Close all valves and set every flow to zero. During a run, use Abort now."
         )
@@ -198,16 +198,6 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.editor, "Recipe")
         self.tabs.addTab(run_tab, "Run")
         self.tabs.addTab(self.rig_panel, "Config")
-        # The rig control shares the tab bar row: no row of its own, in reach from every tab.
-        # A corner widget is clamped to the bar's height, so the button has its own compact
-        # style. The style draws the tab base line above the bar's bottom edge; the margin
-        # lifts the button so that its frame ends on that line.
-        corner = QWidget()
-        corner_layout = QHBoxLayout(corner)
-        overlap = self.style().pixelMetric(QStyle.PM_TabBarBaseOverlap, None, self.tabs.tabBar())
-        corner_layout.setContentsMargins(0, 0, 0, overlap)
-        corner_layout.addWidget(self.shutdown_button)
-        self.tabs.setCornerWidget(corner, Qt.TopRightCorner)
         self.setCentralWidget(self.tabs)
 
     def _build_menu(self) -> None:
@@ -231,6 +221,12 @@ class MainWindow(QMainWindow):
             menu.addAction(action)
             if in_toolbar:
                 toolbar.addAction(action)
+        # The rig control shares the toolbar row, at its right end: no row of its own,
+        # in reach from every tab.
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        toolbar.addWidget(spacer)
+        toolbar.addWidget(self.shutdown_button)
         menu.addSeparator()
         quit_action = QAction("&Quit", self)
         quit_action.setShortcut("Ctrl+Q")

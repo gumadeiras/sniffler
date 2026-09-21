@@ -396,7 +396,7 @@ The same all-off state is applied when a device command fails and when the
 window closes during a run. It is not configurable. The run log calls it
 `safe_state` and the end state `shutdown_state`.
 
-*Shut down the rig*, at the right end of the tab bar, applies the same
+*Shut down the rig*, at the right end of the toolbar, applies the same
 all-off state when no run is active: for example after a run whose end state
 kept a carrier flow on, or before you leave the rig. It opens the LabJack and
 each MFC, closes all valves, sets every setpoint to zero, and closes the
