@@ -394,6 +394,9 @@ valve B together, and a blank that runs as the interleave after every other
 trial. The fake MFCs answer with lag and noise. The
 fake trigger line pulses 3 s after the run arms and then once each second, so
 *Wait for TTL* starts the trials by itself and the timeline shows sync marks.
+The fake TTL output is in `high` mode and *TTL high during the run* starts
+checked, so each run logs the line high with the first trial and low with the
+end state.
 Nothing reaches a serial port or the LabJack. The title bar says *sniffler
 demo* and the status bar says *fake devices, no hardware*. Runs are written to
 the runs directory of `lab.toml`, or of the file given with `--config`; their

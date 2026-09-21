@@ -37,7 +37,7 @@ def demo_settings(runs_directory: Path) -> Settings:
         valves=dict(VALVES),
         runs_directory=runs_directory,
         trigger=TriggerSettings(channel=4),
-        ttl_output=TtlOutputSettings(channel=5),
+        ttl_output=TtlOutputSettings(channel=5, mode="high"),
     )
 
 
@@ -92,4 +92,7 @@ def demo_window(runs_directory: Path, store: QSettings | None = None) -> MainWin
     # Always the demo recipe: a recipe saved for the real rig names devices the demo
     # does not have, and restoring it would leave Start disabled with no clear reason.
     window.show_recipe(demo_recipe())
+    # The demo shows the TTL output: the fake line goes high with the first trial and
+    # holds until the end state, whatever an earlier demo session left in the store.
+    window.ttl_box.setChecked(True)
     return window

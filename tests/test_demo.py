@@ -120,6 +120,8 @@ class DemoTests(unittest.TestCase):
         self.assertFalse(window.isWindowModified())
         self.assertEqual(window.editor.recipe().name, "demo pulses")
         self.assertTrue(window.start_button.isEnabled())
+        self.assertEqual(window.ttl_box.text(), "TTL high during the run")
+        self.assertTrue(window.send_ttl(), "the demo sends the TTL by default")
 
         recipe = demo.demo_recipe()
         short = Recipe(
@@ -198,6 +200,9 @@ class DemoTests(unittest.TestCase):
         self.assertEqual(events["trigger_received"]["value"], "received")
         self.assertEqual(events["trigger_received"]["sync_count"], "")
         self.assertEqual(events["sync_pulse"]["sync_count"], "2", "the start pulse is not a mark")
+        with (status.run_directory / "events.csv").open(newline="") as handle:
+            ttl = [row["value"] for row in csv.DictReader(handle) if row["event"] == "ttl_command"]
+        self.assertEqual(ttl, ["low", "high", "low"], "high from the first trial to the end state")
         window.close()
 
 
