@@ -87,6 +87,7 @@ class RunLogTests(unittest.TestCase):
                 mfcs=["mfc-500"],
                 valves=["odor-1", "Final valve"],
                 ttl_lines=["FIO5"],
+                trigger_lines=["FIO4"],
             )
             log.event("run_start", returned_run_seconds=0.0)
             log.event(
@@ -115,6 +116,17 @@ class RunLogTests(unittest.TestCase):
                 sync_count=4,
             )
             log.digital_state("ttl", "FIO5", True, returned_run_seconds=1.0034)
+            log.trigger_event(
+                "FIO4",
+                "sync_pulse",
+                returned_run_seconds=1.2,
+                trial_index=0,
+                trial_name="odor",
+                step_index=2,
+                value=4,
+                detail="2 pulses since the last read",
+                sync_count=4,
+            )
             log.mfc_sample(
                 "mfc-500",
                 run_seconds=1.5,
@@ -135,6 +147,7 @@ class RunLogTests(unittest.TestCase):
                             "Final valve": "valve-final-valve.csv",
                         },
                         "ttl": {"FIO5": "ttl-fio5.csv"},
+                        "trigger": {"FIO4": "trigger-fio4.csv"},
                     },
                 },
             )
@@ -142,6 +155,7 @@ class RunLogTests(unittest.TestCase):
             valve = read_csv(log.directory / "valve-odor-1.csv")
             untouched = read_csv(log.directory / "valve-final-valve.csv")
             ttl = read_csv(log.directory / "ttl-fio5.csv")
+            trigger = read_csv(log.directory / "trigger-fio4.csv")
             samples = read_csv(log.directory / "mfc-mfc-500.csv")
             self.assertEqual(len(events), 2, "rows are visible before close")
             self.assertEqual(events[0]["sync_count"], "")
@@ -156,6 +170,14 @@ class RunLogTests(unittest.TestCase):
             self.assertEqual(valve[1]["sync_count"], "4")
             self.assertEqual(untouched, [], "a header and no rows for a device never written")
             self.assertEqual([row["state"] for row in ttl], ["1"])
+            self.assertEqual(len(trigger), 1)
+            self.assertEqual(trigger[0]["event"], "sync_pulse")
+            self.assertEqual(trigger[0]["returned_run_seconds"], "1.200000")
+            self.assertEqual(trigger[0]["value"], "4")
+            self.assertEqual(trigger[0]["sync_count"], "4")
+            self.assertEqual(trigger[0]["trial_name"], "odor")
+            self.assertEqual(trigger[0]["detail"], "2 pulses since the last read")
+            self.assertNotIn("state", trigger[0], "a counted input has no level column")
             self.assertEqual(samples[0]["mass_flow"], "99.2")
             self.assertEqual(samples[0]["commanded_setpoint"], "100.0")
             self.assertEqual(samples[0]["pressure"], "")

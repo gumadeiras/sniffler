@@ -48,6 +48,17 @@ DIGITAL_COLUMNS = (
     "state",
     "sync_count",
 )
+TRIGGER_COLUMNS = (
+    "wall_time",
+    "returned_run_seconds",
+    "event",
+    "trial_index",
+    "trial_name",
+    "step_index",
+    "value",
+    "detail",
+    "sync_count",
+)
 
 
 class RunLockError(RuntimeError):
@@ -198,8 +209,9 @@ class RunLog:
 
     Every row is written and flushed when it happens, so a crashed run keeps
     every record up to the crash. ``events.csv`` is the audit of the whole run in
-    order. Each MFC, each valve, and the TTL output has its own CSV with only its
-    rows; the manifest ``series`` table maps the device names to the files.
+    order. Each MFC, each valve, the TTL output, and the trigger input has its own
+    CSV with only its rows; the manifest ``series`` table maps the device names to
+    the files.
     """
 
     def __init__(self, directory: Path) -> None:
@@ -215,6 +227,7 @@ class RunLog:
         mfcs: Iterable[str] = (),
         valves: Iterable[str] = (),
         ttl_lines: Iterable[str] = (),
+        trigger_lines: Iterable[str] = (),
     ) -> None:
         """Create the directory, the manifest, and every log file with its header.
 
@@ -223,7 +236,8 @@ class RunLog:
         the same file name are refused before anything is written.
         """
         index: dict[str, dict[str, str]] = {}
-        for kind, names in (("mfc", mfcs), ("valve", valves), ("ttl", ttl_lines)):
+        kinds = (("mfc", mfcs), ("valve", valves), ("ttl", ttl_lines), ("trigger", trigger_lines))
+        for kind, names in kinds:
             for name in names:
                 file_name = series_file_name(kind, name)
                 taken = next((n for n, f in index.get(kind, {}).items() if f == file_name), None)
@@ -233,7 +247,9 @@ class RunLog:
                         f"{file_name}. Rename one in lab.toml."
                     )
                 index.setdefault(kind, {})[name] = file_name
-                columns = MFC_COLUMNS if kind == "mfc" else DIGITAL_COLUMNS
+                columns = {"mfc": MFC_COLUMNS, "trigger": TRIGGER_COLUMNS}.get(
+                    kind, DIGITAL_COLUMNS
+                )
                 self._series[kind, name] = _CsvStream(self.directory / file_name, columns)
         try:
             self.directory.mkdir(parents=True, exist_ok=False)
@@ -343,6 +359,39 @@ class RunLog:
                 trial_name,
                 _blank(step_index),
                 int(state),
+                _blank(sync_count),
+            ]
+        )
+
+    def trigger_event(
+        self,
+        device: str,
+        event: str,
+        *,
+        returned_run_seconds: float,
+        trial_index: int | None = None,
+        trial_name: str = "",
+        step_index: int | None = None,
+        value: object = "",
+        detail: str = "",
+        sync_count: int | None = None,
+        wall_time: str | None = None,
+    ) -> None:
+        """Append one event of the trigger input: the counter, the wait, and each pulse.
+
+        The input is counted, not read as a level, so its file holds the events
+        of its line with the same fields as their ``events.csv`` rows.
+        """
+        self._stream("trigger", device).append(
+            [
+                wall_time or wall_time_now(),
+                _seconds(returned_run_seconds),
+                event,
+                _blank(trial_index),
+                trial_name,
+                _blank(step_index),
+                value,
+                detail,
                 _blank(sync_count),
             ]
         )

@@ -200,6 +200,11 @@ class DemoTests(unittest.TestCase):
         self.assertEqual(events["trigger_received"]["value"], "received")
         self.assertEqual(events["trigger_received"]["sync_count"], "")
         self.assertEqual(events["sync_pulse"]["sync_count"], "2", "the start pulse is not a mark")
+        with (status.run_directory / "trigger-fio4.csv").open(newline="") as handle:
+            trigger = [row["event"] for row in csv.DictReader(handle)]
+        self.assertEqual(trigger[:3], ["counter_enabled", "trigger_wait", "trigger_received"])
+        self.assertIn("sync_pulse", trigger)
+        self.assertEqual(trigger[-1], "counter_restored")
         with (status.run_directory / "events.csv").open(newline="") as handle:
             ttl = [row["value"] for row in csv.DictReader(handle) if row["event"] == "ttl_command"]
         self.assertEqual(ttl, ["low", "high", "low"], "high from the first trial to the end state")

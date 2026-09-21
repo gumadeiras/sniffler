@@ -429,6 +429,8 @@ During a run the button is off; use *Abort now*.
 When `lab.toml` has a `[trigger]` table, every run counts the pulses on that
 line with the U3 hardware counter and records each one as a `sync_pulse` row in
 `events.csv`, with the running count and the trial and step it landed in. The
+same rows, with the counter enable and restore, the wait, and any counter
+error, also go to the line's own file, `trigger-<line>.csv`. The
 counter is enabled when the run arms and the device configuration is restored
 when the run ends, on every exit path; both are logged. The step thread reads
 the counter only while the next valve deadline is more than 30 ms away, at
@@ -509,7 +511,8 @@ recipe name:
   repeats it as `trigger_seconds`. The manifest also holds `sync_pulses` and,
   when the record stopped early, `sync_recording_stopped_seconds`.
 - One series file for each device, for analysis: `mfc-<name>.csv`,
-  `valve-<name>.csv`, and, when the run sends a TTL, `ttl-<line>.csv`. The
+  `valve-<name>.csv`, when the run sends a TTL `ttl-<line>.csv`, and when
+  the rig has a trigger input `trigger-<line>.csv`. The
   file names are made from the `lab.toml` names; the `series` table in the
   manifest maps each device name to its file, by kind. An MFC file has one
   row for each reading: `wall_time`, `run_seconds`, `commanded_setpoint`,
@@ -520,7 +523,13 @@ recipe name:
   and `sync_count`. The first row of each valve file is the state read when
   the devices were ready, with no command time; the other rows have the same
   times and count as their `events.csv` rows. A device that the recipe never
-  commands still has its file, with the header and the read row.
+  commands still has its file, with the header and the read row. The trigger
+  input is counted, not read as a level, so its file has one row for each
+  event of that line, in order: `wall_time`, `returned_run_seconds`, `event`
+  (`counter_enabled`, `trigger_wait`, `trigger_received` or `trigger_end`,
+  `sync_pulse`, `error`, `sync_recording_stopped`, `counter_restored`),
+  `trial_index`, `trial_name`, `step_index`, `value`, `detail`, and
+  `sync_count`; each row repeats its `events.csv` row.
 
 Every row is written when it happens, so a crashed run keeps its record.
 

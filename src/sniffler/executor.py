@@ -236,6 +236,7 @@ class Executor:
                 mfcs=self._rig.mfcs,
                 valves=self._rig.valves,
                 ttl_lines=[self._ttl_line()] if self._send_ttl else [],
+                trigger_lines=[self._trigger_line()] if self._rig.trigger is not None else [],
             )
         except RunLogError as error:
             lock.release()
@@ -394,9 +395,8 @@ class Executor:
         labjack.enable_counter(self._rig.trigger.channel)
         before = labjack.read_counter(reset=True)
         _is_input, level = labjack.read_digital(self._rig.trigger.channel)
-        self._record(
+        self._record_trigger(
             "counter_enabled",
-            device=line,
             value=before,
             detail=f"pulse counter on {line}; line {'high' if level else 'low'}; "
             f"count before reset {before}",
@@ -421,10 +421,9 @@ class Executor:
     def _on_sync_pulse(self, count: int, seconds: float, arrived: int) -> None:
         status = self.status
         assert self._sync is not None
-        self._record(
+        self._record_trigger(
             "sync_pulse",
             returned_run_seconds=seconds,
-            device=self._trigger_line(),
             value=count,
             trial_index=status.trial_index,
             trial_name=status.trial_name or "",
@@ -435,13 +434,12 @@ class Executor:
         self._publish(sync_pulses=self._sync.pulses)
 
     def _on_sync_error(self, message: str) -> None:
-        self._record("error", device=self._trigger_line(), detail=f"pulse counter: {message}")
+        self._record_trigger("error", detail=f"pulse counter: {message}")
 
     def _on_sync_stopped(self, seconds: float) -> None:
-        self._record(
+        self._record_trigger(
             "sync_recording_stopped",
             returned_run_seconds=seconds,
-            device=self._trigger_line(),
             detail=f"{READ_FAILURE_LIMIT} failed counter reads in a row; the run goes on",
         )
         self._publish(sync_stopped_seconds=seconds)
@@ -462,7 +460,7 @@ class Executor:
             message=f"Waiting for the TTL pulse on {line}."
             + (f" Timeout {timeout:g} s." if timeout is not None else ""),
         )
-        self._record("trigger_wait", device=line, detail="counter armed")
+        self._record_trigger("trigger_wait", detail="counter armed")
         rest = self._recipe.shutdown
         self._apply_step(rest, labjack, worker, {}, detail="rest state while waiting")
         self._publish(valves=dict(rest.valves), setpoints=dict(rest.setpoints))
@@ -482,17 +480,14 @@ class Executor:
         )
         if result.outcome in {TriggerOutcome.RECEIVED, TriggerOutcome.STARTED_NOW}:
             self._schedule_offset = result.ended_seconds
-            self._record(
+            self._record_trigger(
                 "trigger_received",
                 returned_run_seconds=result.ended_seconds,
-                device=line,
                 value=result.outcome.value,
                 detail=result.describe(),
             )
             return result.count
-        self._record(
-            "trigger_end", device=line, value=result.outcome.value, detail=result.describe()
-        )
+        self._record_trigger("trigger_end", value=result.outcome.value, detail=result.describe())
         if result.outcome is TriggerOutcome.ABORTED:
             raise _Aborted
         if result.outcome is TriggerOutcome.TIMED_OUT:
@@ -668,7 +663,7 @@ class Executor:
             # Also when arming failed halfway: the session restores only what it enabled.
             try:
                 labjack.disable_counter()
-                self._record("counter_restored", device=self._trigger_line())
+                self._record_trigger("counter_restored")
             except DeviceError as error:
                 problems.append(str(error))
         if self._log_failure is not None:
@@ -695,6 +690,35 @@ class Executor:
             self._log_failure = self._log_failure or str(error)
         if self._on_event is not None:
             self._on_event(Event(event, **fields))
+
+    def _record_trigger(self, event: str, **fields: Any) -> None:
+        """Record one event of the trigger line in ``events.csv`` and in its series file.
+
+        Every event about the input goes through here, so its file is the whole
+        record of that line. Same failure rule as ``_record``.
+        """
+        fields.setdefault("returned_run_seconds", self.elapsed_seconds())
+        fields.setdefault("returned_wall_time", wall_time_now())
+        line = self._trigger_line()
+        self._record(event, device=line, **fields)
+        log = self._log
+        if log is None:
+            return
+        try:
+            log.trigger_event(
+                line,
+                event,
+                returned_run_seconds=fields["returned_run_seconds"],
+                trial_index=fields.get("trial_index"),
+                trial_name=fields.get("trial_name", ""),
+                step_index=fields.get("step_index"),
+                value=fields.get("value", ""),
+                detail=fields.get("detail", ""),
+                sync_count=fields.get("sync_count"),
+                wall_time=fields["returned_wall_time"],
+            )
+        except RunLogError as error:
+            self._log_failure = self._log_failure or str(error)
 
     def _series(self, kind: str, device: str, state: bool, row: dict[str, Any]) -> None:
         """Write one row of a valve or TTL series from the fields of its event row.

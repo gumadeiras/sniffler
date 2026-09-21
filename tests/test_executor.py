@@ -583,6 +583,19 @@ class TriggerTests(ExecutorTestCase):
         self.assertEqual(status.trigger_seconds, 0.0)
         self.assertEqual(self.manifest(status)["sync_pulses"], 3)
         self.assertGreater(labjack.count_reads, len(labjack.writes), "idle polls happened")
+        # The trigger line has its own file with every event of that line, in order.
+        trigger = self.series(status, "trigger", "FIO4")
+        self.assertEqual(
+            [row["event"] for row in trigger],
+            ["counter_enabled", "sync_pulse", "sync_pulse", "sync_pulse", "counter_restored"],
+        )
+        line_events = [event for event in events if event["device"] == "FIO4"]
+        self.assertEqual(
+            [(row["event"], row["returned_run_seconds"], row["value"]) for row in trigger],
+            [(e["event"], e["returned_run_seconds"], e["value"]) for e in line_events],
+        )
+        self.assertEqual([row["sync_count"] for row in trigger[1:4]], ["1", "2", "3"])
+        self.assertTrue(all(row["trial_name"] for row in trigger[1:4]))
 
     def test_valve_commands_carry_the_count_and_mark_pulses_in_short_steps(self) -> None:
         # Steps of 20 ms never leave 30 ms of idle time, so the counter is read
@@ -637,6 +650,10 @@ class TriggerTests(ExecutorTestCase):
         self.assertEqual(kinds.count("error"), 5)
         self.assertEqual(kinds.count("sync_recording_stopped"), 1)
         self.assertEqual(kinds.count("trial_end"), 2)
+        trigger_kinds = [row["event"] for row in self.series(status, "trigger", "FIO4")]
+        self.assertEqual(trigger_kinds.count("error"), 5, "the failed reads are in the line file")
+        self.assertEqual(trigger_kinds.count("sync_recording_stopped"), 1)
+        self.assertEqual(trigger_kinds[-1], "counter_restored")
         self.assertIsNotNone(status.sync_stopped_seconds)
         manifest = self.manifest(status)
         self.assertEqual(manifest["sync_recording_stopped_seconds"], status.sync_stopped_seconds)
