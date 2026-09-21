@@ -54,6 +54,8 @@ class DemoTests(unittest.TestCase):
         rig = rig_map_from_settings(demo.demo_settings())
         recipe = demo.demo_recipe()
         self.assertEqual(recipe_problems(recipe, rig), [])
+        self.assertEqual(recipe.schedule.interleave, "blank")
+        self.assertEqual(recipe.schedule.run_counts()["blank"], 6, "one blank after each trial")
         mixture = recipe.trial("mixture A + B")
         together = [step for step in mixture.steps if sum(step.valves.values()) == 2]
         self.assertEqual(len(together), 3, "three pulses open valve A and valve B together")

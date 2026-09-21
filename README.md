@@ -390,7 +390,8 @@ uv run sniffler-gui --demo
 Demo mode opens the same window on fake devices with a sample recipe: four
 valves named *valve A* to *valve D*, two MFCs named *carrier flow* and
 *odor flow*, and trials for each odor, a mixture that opens valve A and
-valve B together, and a blank. The fake MFCs answer with lag and noise. The
+valve B together, and a blank that runs as the interleave after every other
+trial. The fake MFCs answer with lag and noise. The
 fake trigger line pulses 3 s after the run arms and then once each second, so
 *Wait for TTL* starts the trials by itself and the timeline shows sync marks.
 Nothing reaches a serial port or the LabJack. The title bar says *sniffler
