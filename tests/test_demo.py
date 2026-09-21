@@ -177,6 +177,17 @@ class DemoTests(unittest.TestCase):
         self.assertEqual(labjack.write_digital_lines({8: True}, read_counter=True), 3)
         self.assertEqual(labjack.count_reads, 4, "the reset is not a counted read")
 
+    def test_fake_pulse_train_runs_on_the_executor_clock(self) -> None:
+        # The executor stamps a pulse with time.perf_counter. A fake on another clock
+        # reports the pulse early by that clock's resolution: 15.6 ms for
+        # time.monotonic on Windows Python 3.12, so a 30 ms pulse showed at 21 ms.
+        labjack = FakeLabJack(PulseTrain(first_seconds=0.02, period_seconds=1.0))
+        labjack.read_counter(reset=True)
+        reset_at = time.perf_counter()
+        while labjack.read_counter() == 0:
+            self.assertLess(time.perf_counter() - reset_at, 1.0, "the pulse never came")
+        self.assertGreaterEqual(time.perf_counter() - reset_at, 0.02)
+
     def test_demo_run_starts_on_the_fake_pulse_and_marks_the_train(self) -> None:
         window = demo.demo_window(Path(self.temporary.name, "runs"), self.store)
         warnings: list[tuple[str, str]] = []

@@ -40,12 +40,15 @@ class FakeLabJack:
     The pulse counter answers from the ``counts`` list, one entry per read with the
     last one held forever. With a ``pulse_train`` it counts with the clock instead,
     from the last reset, which keeps a test exact when the number of idle polls
-    depends on the host. ``counter_error`` fails every counter packet, including the
-    valve writes that read it. ``poll_error`` fails only the idle polls.
+    depends on the host. The clock is the executor's run clock; a different one
+    stamps pulses early or late by the difference in resolution, 15.6 ms for
+    ``time.monotonic`` on Windows before Python 3.13. ``counter_error`` fails every
+    counter packet, including the valve writes that read it. ``poll_error`` fails
+    only the idle polls.
     """
 
     def __init__(
-        self, pulse_train: PulseTrain | None = None, clock: Callable[[], float] = time.monotonic
+        self, pulse_train: PulseTrain | None = None, clock: Callable[[], float] = time.perf_counter
     ) -> None:
         self.writes: list[tuple[float, dict[int, bool]]] = []
         # Driven output lines and their levels; every other line is an input at ``input_level``.
