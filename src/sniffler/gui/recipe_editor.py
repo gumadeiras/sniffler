@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from sniffler.gui import theme
+from sniffler.gui.flow_dialog import FlowDialog
 from sniffler.gui.icons import icon
 from sniffler.gui.pulse_dialog import PulseTrainDialog
 from sniffler.gui.step_table import StepDelegate, StepRow, StepTableModel
@@ -133,6 +134,10 @@ class RecipeEditor(QWidget):
         self._step_down = _tool("move-down", "Move step down")
         self._pulse_train = QPushButton(icon("pulse-train"), "Pulse train…")
         self._pulse_train.setToolTip("Insert a train of pulses on one valve as editable steps")
+        self._set_flow = QPushButton("Set flow…")
+        self._set_flow.setToolTip(
+            "Give one MFC the same target flow in every step of this trial or of all trials"
+        )
 
         self._schedule = QTableWidget(0, 2)
         self._schedule.setHorizontalHeaderLabels(["Trial", "Count"])
@@ -202,6 +207,7 @@ class RecipeEditor(QWidget):
             self._step_up,
             self._step_down,
             self._pulse_train,
+            self._set_flow,
         )
         steps_box = _section("Steps")
         steps_layout = QVBoxLayout(steps_box)
@@ -270,6 +276,7 @@ class RecipeEditor(QWidget):
             self._step_up,
             self._step_down,
             self._pulse_train,
+            self._set_flow,
             self._shutdown_view,
             self._schedule,
             self._interleave,
@@ -329,6 +336,7 @@ class RecipeEditor(QWidget):
         self._step_up.clicked.connect(lambda: self._on_move_step(-1))
         self._step_down.clicked.connect(lambda: self._on_move_step(1))
         self._pulse_train.clicked.connect(self._on_pulse_train)
+        self._set_flow.clicked.connect(self._on_set_flow)
         self._schedule.cellChanged.connect(self._on_count_changed)
         self._interleave.currentIndexChanged.connect(self._on_interleave_changed)
         self._ordering.currentIndexChanged.connect(self._emit_changed)
@@ -501,7 +509,13 @@ class RecipeEditor(QWidget):
             self._current = None
             self._steps.set_rows([])
         enabled = self._current is not None
-        for button in (self._add_step, self._pulse_train, self._remove_trial, self._rename_trial):
+        for button in (
+            self._add_step,
+            self._pulse_train,
+            self._set_flow,
+            self._remove_trial,
+            self._rename_trial,
+        ):
             button.setEnabled(enabled)
 
     def _unique_name(self, base: str) -> str:
@@ -636,6 +650,35 @@ class RecipeEditor(QWidget):
         self._steps.insert_rows(position, rows)
         if rows:
             self._step_view.selectRow(position)
+
+    def _on_set_flow(self) -> None:
+        if not self._rig.mfcs:
+            QMessageBox.information(self, "Set flow", "lab.toml has no [alicat] devices.")
+            return
+        self._store_current_rows()
+        position = self._selected_step()
+        template = self._steps.rows()[position] if position >= 0 else self._steps.blank_row()
+        dialog = FlowDialog(
+            self._rig,
+            {trial.name: trial.rows for trial in self._trials},
+            self._trials[self._current].name,
+            template,
+            self._steps.mfc_at(self._step_view.currentIndex().column()),
+            self,
+        )
+        if dialog.exec():
+            self.set_flow(dialog.mfc(), dialog.flow(), dialog.all_trials())
+
+    def set_flow(self, mfc: str, flow: float, all_trials: bool) -> None:
+        """Give one MFC one target flow in every step of the selected trial or of all trials."""
+        self._store_current_rows()
+        current = self._step_view.currentIndex()
+        for trial in self._trials if all_trials else [self._trials[self._current]]:
+            for row in trial.rows:
+                row.setpoints[mfc] = flow
+        self._steps.set_rows(self._trials[self._current].rows)
+        self._step_view.setCurrentIndex(self._steps.index(current.row(), current.column()))
+        self._emit_changed()
 
     # Change tracking ---------------------------------------------------
 

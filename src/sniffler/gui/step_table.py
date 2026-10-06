@@ -134,7 +134,7 @@ class StepTableModel(QAbstractTableModel):
         index = column - offset
         return self._valves[index] if 0 <= index < len(self._valves) else None
 
-    def _mfc_at(self, column: int) -> str | None:
+    def mfc_at(self, column: int) -> str | None:
         offset = (1 if self._with_duration else 0) + len(self._valves)
         index = column - offset
         return self._mfcs[index] if 0 <= index < len(self._mfcs) else None
@@ -159,7 +159,7 @@ class StepTableModel(QAbstractTableModel):
             return "Duration (s)"
         if (valve := self._valve_at(section)) is not None:
             return valve
-        if (mfc := self._mfc_at(section)) is not None:
+        if (mfc := self.mfc_at(section)) is not None:
             return f"{mfc}\n{self._rig.mfcs[mfc].flow_unit}"
         return None
 
@@ -170,7 +170,7 @@ class StepTableModel(QAbstractTableModel):
         step = self._rows[row]
         if column == self._duration_column():
             return duration_problem(step.duration)
-        if (mfc := self._mfc_at(column)) is not None:
+        if (mfc := self.mfc_at(column)) is not None:
             return setpoint_problem(step.setpoints.get(mfc), self._rig.mfcs[mfc])
         return None
 
@@ -211,7 +211,7 @@ class StepTableModel(QAbstractTableModel):
             if column == self._duration_column():
                 value = step.duration
             else:
-                value = step.setpoints.get(self._mfc_at(column) or "")
+                value = step.setpoints.get(self.mfc_at(column) or "")
             if value is None:
                 return ""
             return f"{value:g}" if role == Qt.DisplayRole else str(value)
@@ -239,7 +239,7 @@ class StepTableModel(QAbstractTableModel):
             if column == self._duration_column():
                 step.duration = number
             else:
-                step.setpoints[self._mfc_at(column) or ""] = number
+                step.setpoints[self.mfc_at(column) or ""] = number
         else:
             return False
         self.dataChanged.emit(index, index, [role, Qt.DisplayRole, Qt.BackgroundRole])

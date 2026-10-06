@@ -235,6 +235,74 @@ class RecipeEditorTests(GuiTestCase):
         self.assertTrue(editor._steps.setData(editor._steps.index(2, 0), "0.25"))
         self.assertEqual(editor._steps.steps()[2].duration_seconds, 0.25)
 
+    def test_set_flow_changes_one_mfc_in_the_trial_or_in_all_trials(self) -> None:
+        from sniffler.gui.recipe_editor import RecipeEditor
+
+        editor = RecipeEditor(RIG)
+        editor.set_recipe(make_recipe(0.5))
+        editor._trial_list.setCurrentRow(1)
+        changes: list[None] = []
+        editor.changed.connect(lambda: changes.append(None))
+
+        editor.set_flow("mfc-500", 200.0, all_trials=False)
+        recipe = editor.recipe()
+        self.assertEqual([s.setpoints["mfc-500"] for s in recipe.trials[1].steps], [200.0])
+        self.assertEqual([s.setpoints["mfc-500"] for s in recipe.trials[0].steps], [100.0] * 2)
+        self.assertEqual(editor._steps.steps()[0].setpoints["mfc-500"], 200.0)
+        self.assertEqual(len(changes), 1)
+
+        editor.set_flow("mfc-2000", 1500.0, all_trials=True)
+        recipe = editor.recipe()
+        flows = [s.setpoints["mfc-2000"] for trial in recipe.trials for s in trial.steps]
+        self.assertEqual(flows, [1500.0] * 3)
+        self.assertEqual([s.setpoints["mfc-500"] for s in recipe.trials[0].steps], [100.0] * 2)
+        self.assertEqual([s.valves["odor-1"] for s in recipe.trials[0].steps], [True, False])
+        self.assertEqual(recipe.shutdown, make_recipe(0.5).shutdown, "the end state stays")
+
+    def test_set_flow_dialog_starts_from_the_current_cell_and_refuses_a_bad_flow(self) -> None:
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QDialogButtonBox
+
+        from sniffler.gui.flow_dialog import FlowDialog
+        from sniffler.gui.recipe_editor import RecipeEditor
+
+        editor = RecipeEditor(RIG)
+        editor.set_recipe(make_recipe(0.5))
+        editor._trial_list.setCurrentRow(0)
+        # Columns: duration, three valves, mfc-500, mfc-2000.
+        self.assertTrue(editor._steps.setData(editor._steps.index(0, 4), "0"))
+        editor._step_view.setCurrentIndex(editor._steps.index(1, 4))
+        seen: dict[str, object] = {}
+
+        def answer() -> None:
+            dialog = editor.findChild(FlowDialog)
+            ok = dialog._buttons.button(QDialogButtonBox.Ok)
+            try:
+                seen["start"] = (dialog.mfc(), dialog._flow.text(), dialog._now.text())
+                dialog._flow.setText("500")
+                seen["refused"] = (dialog._problem.text(), ok.isEnabled())
+                dialog._flow.setText("250")
+                dialog._all_trials.setChecked(True)
+                seen["all trials"] = dialog._now.text()
+                ok.click()
+            finally:
+                if dialog.isVisible():
+                    dialog.reject()
+
+        QTimer.singleShot(0, answer)
+        editor._set_flow.click()
+
+        self.assertEqual(seen["start"], ("mfc-500", "100", "0 SCCM in 1 step, 100 SCCM in 1 step"))
+        self.assertEqual(
+            seen["refused"],
+            ("The target flow must be at most the lab.toml limit of 400 SCCM.", False),
+        )
+        self.assertEqual(seen["all trials"], "100 SCCM in 2 steps, 0 SCCM in 1 step")
+        recipe = editor.recipe()
+        flows = [s.setpoints["mfc-500"] for trial in recipe.trials for s in trial.steps]
+        self.assertEqual(flows, [250.0] * 3)
+        self.assertEqual(editor._step_view.currentIndex().row(), 1, "the selection stays")
+
 
 class EditingTests(GuiTestCase):
     def test_remove_trial_asks_first_and_names_the_scope(self) -> None:
@@ -913,6 +981,7 @@ class MainWindowTests(GuiTestCase):
             editor._step_up,
             editor._step_down,
             editor._pulse_train,
+            editor._set_flow,
             editor._shutdown_view,
             editor._schedule,
         ):

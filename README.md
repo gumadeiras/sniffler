@@ -325,6 +325,12 @@ a problem exists.
 ordinary step rows, one for each pulse and one for each gap, and you can edit
 each row.
 
+*Set flow…* gives one MFC the same target flow in every step of the selected
+trial or of all trials, for example to try a different carrier flow. The
+dialog starts with the MFC of the current cell and shows the flows that the
+steps have now, so you can see a step that you set to a different flow on
+purpose. The end state does not change.
+
 *Valve contents* has one text field for each valve in `lab.toml`. Write what
 the valve holds, for example the odorant and its dilution. The text is saved
 in the recipe file and in the manifest of every run, so the analysis can name
